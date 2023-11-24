@@ -18,8 +18,7 @@ package raft
 //
 
 import (
-	//	"bytes"
-	"math/rand"
+	"fmt"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -28,25 +27,18 @@ import (
 	"course/labrpc"
 )
 
-// as each Raft peer becomes aware that successive log entries are
-// committed, the peer should send an ApplyMsg to the service (or
-// tester) on the same server, via the applyCh passed to Make(). set
-// CommandValid to true to indicate that the ApplyMsg contains a newly
-// committed log entry.
-//
-// in part PartD you'll want to send other kinds of messages (e.g.,
-// snapshots) on the applyCh, but set CommandValid to false for these
-// other uses.
-type ApplyMsg struct {
-	CommandValid bool
-	Command      interface{}
-	CommandIndex int
+type Role string
 
-	// For PartD:
-	SnapshotValid bool
-	Snapshot      []byte
-	SnapshotTerm  int
-	SnapshotIndex int
+const (
+	Follower  Role = "Follower"
+	Candidate Role = "Candidate"
+	Leader    Role = "Leader"
+)
+
+type LogEntry struct {
+	Term         int
+	Command      interface{}
+	CommandValid bool
 }
 
 // A Go object implementing a single Raft peer.
@@ -60,17 +52,46 @@ type Raft struct {
 	// Your data here (PartA, PartB, PartC).
 	// Look at the paper's Figure 2 for a description of what
 	// state a Raft server must maintain.
+	role Role
 
+	currentTerm int
+	votedFor    int
+	log         []LogEntry
+
+	commitIndex int
+	lastApplied int
+
+	// only leaders
+	nextIndex  []int
+	matchIndex []int
+
+	// used for election loop
+	electionStart   time.Time
+	electionTimeout time.Duration
+
+	applyCh   chan ApplyMsg
+	applyCond *sync.Cond
+}
+
+func (rf *Raft) LogCountLocked() int {
+	return len(rf.log) - 1
+}
+
+func PrintLogsLocked(log []LogEntry) []string {
+	var printLogEntries []string
+	for index, logEntry := range log {
+		printLogEntries = append(printLogEntries, fmt.Sprintf("[%d]T%d(%d)", index, logEntry.Term, logEntry.Command))
+	}
+	return printLogEntries
 }
 
 // return currentTerm and whether this server
 // believes it is the leader.
 func (rf *Raft) GetState() (int, bool) {
-
-	var term int
-	var isleader bool
 	// Your code here (PartA).
-	return term, isleader
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+	return rf.currentTerm, rf.role == Leader
 }
 
 // save Raft's persistent state to stable storage,
@@ -120,55 +141,6 @@ func (rf *Raft) Snapshot(index int, snapshot []byte) {
 
 }
 
-// example RequestVote RPC arguments structure.
-// field names must start with capital letters!
-type RequestVoteArgs struct {
-	// Your data here (PartA, PartB).
-}
-
-// example RequestVote RPC reply structure.
-// field names must start with capital letters!
-type RequestVoteReply struct {
-	// Your data here (PartA).
-}
-
-// example RequestVote RPC handler.
-func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
-	// Your code here (PartA, PartB).
-}
-
-// example code to send a RequestVote RPC to a server.
-// server is the index of the target server in rf.peers[].
-// expects RPC arguments in args.
-// fills in *reply with RPC reply, so caller should
-// pass &reply.
-// the types of the args and reply passed to Call() must be
-// the same as the types of the arguments declared in the
-// handler function (including whether they are pointers).
-//
-// The labrpc package simulates a lossy network, in which servers
-// may be unreachable, and in which requests and replies may be lost.
-// Call() sends a request and waits for a reply. If a reply arrives
-// within a timeout interval, Call() returns true; otherwise
-// Call() returns false. Thus Call() may not return for a while.
-// A false return can be caused by a dead server, a live server that
-// can't be reached, a lost request, or a lost reply.
-//
-// Call() is guaranteed to return (perhaps after a delay) *except* if the
-// handler function on the server side does not return.  Thus there
-// is no need to implement your own timeouts around Call().
-//
-// look at the comments in ../labrpc/labrpc.go for more details.
-//
-// if you're having trouble getting RPC to work, check that you've
-// capitalized all field names in structs passed over RPC, and
-// that the caller passes the address of the reply struct with &, not
-// the struct itself.
-func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *RequestVoteReply) bool {
-	ok := rf.peers[server].Call("Raft.RequestVote", args, reply)
-	return ok
-}
-
 // the service using Raft (e.g. a k/v server) wants to start
 // agreement on the next command to be appended to Raft's log. if this
 // server isn't the leader, returns false. otherwise start the
@@ -181,12 +153,32 @@ func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *Reques
 // if it's ever committed. the second return value is the current
 // term. the third return value is true if this server believes it is
 // the leader.
+/*
+Raft协议的服务（例如键/值服务器）希望开始就要添加到Raft日志的下一条命令的达成一致。如果此服务器不是领导者，则返回false。
+否则，启动达成一致并立即返回。无法保证此命令将永远提交到Raft日志，因为领导者可能会失败或失去选举。即使Raft实例已被终止，该函数也应以优雅的方式返回。
+
+第一个返回值是该命令如果被提交将出现的索引。第二个返回值是当前任期。第三个返回值是如果该服务器认为它是领导者则为true。
+*/
 func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	index := -1
 	term := -1
-	isLeader := true
+	isLeader := false
 
 	// Your code here (PartB).
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+	isLeader = rf.role == Leader
+
+	if !isLeader {
+		return index, term, isLeader
+	}
+
+	term = rf.currentTerm
+	index = rf.LogCountLocked() + 1
+
+	rf.log = append(rf.log, LogEntry{Term: term, Command: command, CommandValid: true})
+	rf.matchIndex[rf.me]++
+	LOG(rf.me, rf.currentTerm, DLeader, "Append log entry, [%d]T%d(%d), logs: %v", index, term, command, PrintLogsLocked(rf.log))
 
 	return index, term, isLeader
 }
@@ -210,18 +202,9 @@ func (rf *Raft) killed() bool {
 	return z == 1
 }
 
-func (rf *Raft) ticker() {
-	for rf.killed() == false {
-
-		// Your code here (PartA)
-		// Check if a leader election should be started.
-
-		// pause for a random amount of time between 50 and 350
-		// milliseconds.
-		ms := 50 + (rand.Int63() % 300)
-		time.Sleep(time.Duration(ms) * time.Millisecond)
-	}
-}
+const (
+	logsInitialCapacity = 10000
+)
 
 // the service or tester wants to create a Raft server. the ports
 // of all the Raft servers (including this one) are in peers[]. this
@@ -240,12 +223,92 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.me = me
 
 	// Your initialization code here (PartA, PartB, PartC).
+	// log 第一个索引是从1开始
+	rf.log = make([]LogEntry, 0, logsInitialCapacity)
+	// 第一个空的entry，方便边界处理
+	rf.log = append(rf.log, LogEntry{Term: 0, CommandValid: false})
+	rf.applyCh = applyCh
+	rf.applyCond = sync.NewCond(&rf.mu)
 
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
 
 	// start ticker goroutine to start elections
-	go rf.ticker()
+	go rf.electionTicker()
+
+	// start application goroutine to start application
+	go rf.applicationTicker()
 
 	return rf
+}
+
+func (rf *Raft) becomeCandidateLocked() {
+	// the leader cannot be to candidate
+	if rf.role == Leader {
+		LOG(rf.me, rf.currentTerm, DError, "Leader can't become Candidate")
+		return
+	}
+
+	LOG(rf.me, rf.currentTerm, DVote, "%s -> Candidate, For T%d->T%d",
+		rf.role, rf.currentTerm, rf.currentTerm+1)
+
+	rf.role = Candidate
+	rf.currentTerm++
+	rf.votedFor = rf.me
+}
+
+// become a follower in `term`, term could not be decreased
+func (rf *Raft) becomeFollowerLocked(term int) {
+	// if currentTerm is large cannot be to follower
+	if term < rf.currentTerm {
+		LOG(rf.me, rf.currentTerm, DError, "Can't become Follower, lower term")
+		return
+	}
+
+	LOG(rf.me, rf.currentTerm, DLog, "%s -> Follower, For T%d->T%d",
+		rf.role, rf.currentTerm, term)
+
+	// important! Could only reset the `votedFor` when term increased
+	// 只有 candidate 收到 leader 心跳之后转换为 follower 才会在等于（term == rf.currentTerm）的情况下进入 becomeFollowerLocked 逻辑
+	// 因为 candidate 选举一开始肯定已经投过自己了，同 term 不能再投票了。所以不能重置它的投票。
+	if term > rf.currentTerm {
+		// unset vote
+		rf.votedFor = -1
+	}
+	rf.role = Follower
+	rf.currentTerm = term
+}
+
+func (rf *Raft) becomeLeaderLocked() {
+	// Only candidate can be to leader
+	if rf.role != Candidate {
+		LOG(rf.me, rf.currentTerm, DLeader, "%s, Only candidate can become Leader", rf.role)
+		return
+	}
+
+	LOG(rf.me, rf.currentTerm, DLeader, "%s -> Leader, For T%d, commitIndex: %d, logs: %v",
+		rf.role, rf.currentTerm, rf.commitIndex, PrintLogsLocked(rf.log))
+
+	rf.role = Leader
+
+	rf.nextIndex = make([]int, len(rf.peers))
+	lastLogIndex := rf.LogCountLocked()
+	for i := range rf.nextIndex {
+		rf.nextIndex[i] = lastLogIndex + 1
+	}
+	rf.matchIndex = make([]int, len(rf.peers))
+	// 成为leader之后，matchIndex[]关于自己的那个索引的值需要为本地日志中最新的log entry的索引。至于其他peer的初始化为0即可
+	rf.matchIndex[rf.me] = lastLogIndex
+}
+
+/*
+这里面有个检查“上下文”是否丢失的关键函数：contextLostLocked 。上下文，在不同的地方有不同的指代。
+在我们的 Raft 的实现中，“上下文”就是指 Term 和 Role。即在一个任期内，只要你的角色没有变化，就能放心地推进状态机。
+
+在多线程环境中，只有通过锁保护起来的临界区内的代码块才可以认为被原子地执行了。
+由于在 Raft 实现中，我们使用了大量的 goroutine，因此每当线程新进入一个临界区时，要进行 Raft 上下文的检查。
+如果 Raft 的上下文已经被更改，要及时终止 goroutine，避免对状态机做出错误的改动。
+*/
+func (rf *Raft) contextLostLocked(role Role, term int) bool {
+	return !(rf.currentTerm == term && rf.role == role)
 }
