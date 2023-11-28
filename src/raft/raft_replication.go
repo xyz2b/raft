@@ -130,8 +130,8 @@ func (rf *Raft) startReplication(term int) bool {
 					日志不一致两种情况：
 						1.follower 的日志索引还没有到达 PrevLogIndex 处（需要将 leader 的 follower 最新日志索引+1 到 PrevLogIndex 处的日志都发来，然后追加到 follower 中）
 						2.follower 在 PrevLogIndex 处的日志 term 和 leader PrevLogIndex 处的日志 term 不一致
-							（需要将 leader 的 PrevLogIndex 对应的 term（PrevLogTerm） 的所有日志以及其后term的所有日志都发来，
-							然后将 follower PrevLogIndex 对应的 term（PrevLogTerm） 的第一条日志（包含）之后的所有日志删除，然后将leader后面发来的日志追加进去）
+							（需要将 leader 的 PrevLogIndex 对应的 term（PrevLogTerm） 的所有日志以及其后term的所有日志都发来，（此时 RPC 参数 PrevLogIndex 为 leader 的 PrevLogIndex 对应的 term（PrevLogTerm） 的第一条日志的 index，记为PrevLogIndexNew）
+							然后将 follower 本地日志中 从 leader 的 PrevLogIndex 对应的 term（PrevLogTerm） 的第一条日志的 index（包含）开始（即PrevLogIndexNew），到 follower 本地日志末尾的所有日志删除，然后将leader后面发来的日志追加进去）
 					（这里实现直接减到 nextIndex-1（PrevLogIndex）对应的 term（PrevLogTerm） 的第一条日志处，可能会比实际需要的多一些，但是无影响）
 		*/
 		if !reply.Success {
