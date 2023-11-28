@@ -227,6 +227,9 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.log = make([]LogEntry, 0, logsInitialCapacity)
 	// 第一个空的entry，方便边界处理
 	rf.log = append(rf.log, LogEntry{Term: 0, CommandValid: false})
+	rf.matchIndex = make([]int, len(rf.peers))
+	rf.nextIndex = make([]int, len(rf.peers))
+
 	rf.applyCh = applyCh
 	rf.applyCond = sync.NewCond(&rf.mu)
 
@@ -291,14 +294,12 @@ func (rf *Raft) becomeLeaderLocked() {
 
 	rf.role = Leader
 
-	rf.nextIndex = make([]int, len(rf.peers))
-	lastLogIndex := rf.LogCountLocked()
-	for i := range rf.nextIndex {
-		rf.nextIndex[i] = lastLogIndex + 1
+	for peer := 0; peer < len(rf.peers); peer++ {
+		// 发送给某个server的下一条日志的索引（初始化为leader最后一条日志索引+1）
+		rf.nextIndex[peer] = rf.LogCountLocked() + 1
+		// 已知某个server上已经复制的日志的最大索引（初始化为0，自动增加）
+		rf.matchIndex[peer] = 0
 	}
-	rf.matchIndex = make([]int, len(rf.peers))
-	// 成为leader之后，matchIndex[]关于自己的那个索引的值需要为本地日志中最新的log entry的索引。至于其他peer的初始化为0即可
-	rf.matchIndex[rf.me] = lastLogIndex
 }
 
 /*

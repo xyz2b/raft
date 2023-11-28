@@ -41,14 +41,6 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		rf.becomeFollowerLocked(args.Term)
 	}
 
-	// reset the timer
-	/*
-		重置时钟本质上是认可对方权威，且承诺自己之后一段时间内不在发起选举。在代码中有两处：
-		  1. 接收到心跳 RPC，并且认可其为 Leader
-		  2. 接受到选举 RPC，并且给出自己的选票
-	*/
-	rf.resetElectionTimerLocked()
-
 	LOG(rf.me, rf.currentTerm, DLog2, "<- S%d, Receive log entry, entries: %v, PrevLogIndex: %d, PrevLogTerm: %d, LeaderCommit: %d",
 		args.LeaderId, PrintLogsLocked(args.Entries), args.PrevLogIndex, args.PrevLogTerm, args.LeaderCommit)
 
@@ -61,17 +53,9 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	}
 
 	// 如果现有日志条目与新日志条目冲突（相同索引，但不同的任期），删除现有日志条目及其后面的所有日志条目
-	if (lastLogIndex > args.PrevLogIndex) && (rf.log[args.PrevLogIndex+1].Term != args.Entries[0].Term) {
-		deleteIndexEnd := lastLogIndex
-		rf.log = rf.log[:args.PrevLogIndex+1]
-		LOG(rf.me, rf.currentTerm, DLog2, "Delete log: %d->%d", args.PrevLogIndex+1, deleteIndexEnd)
-	}
-
-	// args.Entries 为空表示 心跳RPC
-	if args.Entries != nil && len(args.Entries) > 0 {
-		// 追加日志中尚未存在的任何新条目
-		rf.log = append(rf.log, args.Entries...)
-	}
+	// 然后将新的 leader logs 添加到本地
+	rf.log = append(rf.log[:args.PrevLogIndex+1], args.Entries...)
+	LOG(rf.me, rf.currentTerm, DLog2, "Follower append logs: (%d, %d]", args.PrevLogIndex, args.PrevLogIndex+len(args.Entries))
 
 	// 如果 leaderCommit > commitIndex, 设置 commitIndex = min(leaderCommit, 最新日志条目的索引)
 	if args.LeaderCommit > rf.commitIndex {
@@ -84,6 +68,14 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	}
 
 	reply.Success = true
+
+	// reset the timer
+	/*
+		重置时钟本质上是认可对方权威，且承诺自己之后一段时间内不在发起选举。在代码中有两处：
+		  1. 接收到心跳 RPC，并且认可其为 Leader
+		  2. 接受到选举 RPC，并且给出自己的选票
+	*/
+	rf.resetElectionTimerLocked()
 }
 
 func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *AppendEntriesReply) bool {
@@ -135,19 +127,27 @@ func (rf *Raft) startReplication(term int) bool {
 			如果leader当前最后一条日志的索引 >= follower 的 nextIndex（leader 的 nextIndex[] 中记录的）: 向 follower 发送带有从nextIndex开始的日志条目的AppendEntries RPC
 			        如果成功：更新follower在leader本地nextIndex[]中的nextIndex和matchIndex[]中的matchIndex
 			        如果由于日志不一致而导致follower追加日志失败: 减小nextIndex并重试
+					日志不一致两种情况：
+						1.follower 的日志索引还没有到达 PrevLogIndex 处（需要将 leader 的 follower 最新日志索引+1 到 PrevLogIndex 处的日志都发来，然后追加到 follower 中）
+						2.follower 在 PrevLogIndex 处的日志 term 和 leader PrevLogIndex 处的日志 term 不一致
+							（需要将 leader 的 PrevLogIndex 对应的 term（PrevLogTerm） 的所有日志以及其后term的所有日志都发来，
+							然后将 follower PrevLogIndex 对应的 term（PrevLogTerm） 的第一条日志（包含）之后的所有日志删除，然后将leader后面发来的日志追加进去）
+					（这里实现直接减到 nextIndex-1（PrevLogIndex）对应的 term（PrevLogTerm） 的第一条日志处，可能会比实际需要的多一些，但是无影响）
 		*/
-		if args.Entries != nil && len(args.Entries) > 0 { // 非心跳RPC
-			if reply.Success {
-				rf.nextIndex[peer] = rf.nextIndex[peer] + len(args.Entries)
-				rf.matchIndex[peer] = rf.nextIndex[peer] - 1
-				LOG(rf.me, rf.currentTerm, DLog, "-> S%d, Accept, Update matchIndex=%v, update nextIndex=%v", peer, rf.matchIndex, rf.nextIndex)
-			} else {
-				if rf.nextIndex[peer] > 1 {
-					rf.nextIndex[peer]--
-				}
-				LOG(rf.me, rf.currentTerm, DLog, "-> S%d, Reject, decrease nextIndex=%v", peer, rf.nextIndex)
+		if !reply.Success {
+			idx := rf.nextIndex[peer] - 1
+			term := rf.log[idx].Term
+			for idx > 0 && rf.log[idx].Term == term {
+				idx--
 			}
+			rf.nextIndex[peer] = idx + 1
+			LOG(rf.me, rf.currentTerm, DLog, "Log not matched in %d, Update next=%d", args.PrevLogIndex, rf.nextIndex[peer])
+			return
 		}
+
+		rf.nextIndex[peer] = rf.nextIndex[peer] + len(args.Entries)
+		rf.matchIndex[peer] = rf.nextIndex[peer] - 1
+		LOG(rf.me, rf.currentTerm, DLog, "-> S%d, Accept, Update matchIndex=%v, update nextIndex=%v", peer, rf.matchIndex, rf.nextIndex)
 
 		// 在收到多数 Follower 同步成功的请求后，Leader 要推进 CommitIndex，并让所有 Peer Apply
 		// 如果存在一个N，使得 N > commitIndex，并且matchIndex[i]的大多数都 >= N，并且log[N].term == currentTerm: 设置commitIndex = N
@@ -183,6 +183,9 @@ func (rf *Raft) startReplication(term int) bool {
 	lastLogIndex := rf.LogCountLocked()
 	for peer := 0; peer < len(rf.peers); peer++ {
 		if peer == rf.me {
+			// Don't forget to update Leader's matchIndex
+			rf.matchIndex[peer] = rf.LogCountLocked()
+			rf.nextIndex[peer] = rf.LogCountLocked() + 1
 			continue
 		}
 
@@ -200,6 +203,7 @@ func (rf *Raft) startReplication(term int) bool {
 		}
 		args.PrevLogTerm = rf.log[rf.nextIndex[peer]-1].Term
 		args.PrevLogIndex = rf.nextIndex[peer] - 1
+		LOG(rf.me, rf.currentTerm, DDebug, "-> S%d, Send log, Prev=[%d]T%d, Len()=%d", peer, args.PrevLogIndex, args.PrevLogTerm, len(args.Entries))
 
 		go replicateToPeer(peer, args)
 	}

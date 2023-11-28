@@ -23,6 +23,18 @@ type RequestVoteReply struct {
 	VoteGranted bool
 }
 
+func (rf *Raft) isMoreUpToDateLocked(candidateIndex, candidateTerm int) bool {
+	logCount := rf.LogCountLocked()
+	lastLogEntryIndex := logCount
+	lastLogEntryTerm := rf.log[logCount].Term
+	LOG(rf.me, rf.currentTerm, DVote, "Compare last log, Me: [%d]T%d, Candidate: [%d]T%d", lastLogEntryIndex, lastLogEntryTerm, candidateIndex, candidateTerm)
+
+	if lastLogEntryTerm != candidateTerm {
+		return lastLogEntryTerm > candidateTerm
+	}
+	return lastLogEntryIndex > candidateIndex
+}
+
 // example RequestVote RPC handler.
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	// Your code here (PartA, PartB).
@@ -38,9 +50,9 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	// 回调函数实现的一个关键点，还是要先对齐 Term。不仅是因为这是之后展开“两个 Peer 对话”的基础，
 	// 还是因为在对齐 Term 的过程中，Peer 有可能重置 votedFor。这样即使本来由于已经投过票了而不能再投票，但提高任期重置后，在新的 Term 里，就又有一票可以投了。
 	reply.Term = rf.currentTerm
+	reply.VoteGranted = false
 	if rf.currentTerm > args.Term {
 		LOG(rf.me, rf.currentTerm, DVote, "-> S%d, Reject vote, higher term, T%d>T%d", args.CandidateId, rf.currentTerm, args.Term)
-		reply.VoteGranted = false
 		return
 	}
 	if rf.currentTerm < args.Term {
@@ -50,30 +62,26 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	// check the votedFor
 	if rf.votedFor != -1 {
 		LOG(rf.me, rf.currentTerm, DVote, "-> S%d, Reject, Already voted S%d", args.CandidateId, rf.votedFor)
-		reply.VoteGranted = false
 		return
 	}
 
 	// 比较日志的新旧
-	lastLogEntryIndex := -1
-	lastLogEntryTerm := -1
+	//logCount := rf.LogCountLocked()
+	//lastLogEntryIndex := logCount
+	//lastLogEntryTerm := rf.log[logCount].Term
+	//
+	//if lastLogEntryTerm > args.LastLogTerm {
+	//	LOG(rf.me, rf.currentTerm, DVote, "-> S%d, Reject, Last log entry term is newer, [%d]T%d at S%d, [%d]T%d at S%d",
+	//		args.CandidateId, lastLogEntryIndex, lastLogEntryTerm, rf.me, args.LastLogIndex, args.LastLogTerm, args.CandidateId)
+	//	return
+	//} else if lastLogEntryTerm == args.LastLogTerm && lastLogEntryIndex > args.LastLogIndex {
+	//	LOG(rf.me, rf.currentTerm, DVote, "-> S%d, Reject, Last log entry index is newer, [%d]T%d at S%d, [%d]T%d at S%d",
+	//		args.CandidateId, lastLogEntryIndex, lastLogEntryTerm, rf.me, args.LastLogIndex, args.LastLogTerm, args.CandidateId)
+	//	return
+	//}
 
-	logCount := rf.LogCountLocked()
-	if logCount > 0 {
-		lastLogEntry := rf.log[logCount]
-		lastLogEntryIndex = logCount
-		lastLogEntryTerm = lastLogEntry.Term
-	}
-
-	if lastLogEntryTerm > args.LastLogTerm {
-		LOG(rf.me, rf.currentTerm, DVote, "-> S%d, Reject, Last log entry term is newer, [%d]T%d at S%d, [%d]T%d at S%d",
-			args.CandidateId, lastLogEntryIndex, lastLogEntryTerm, rf.me, args.LastLogIndex, args.LastLogTerm, args.CandidateId)
-		reply.VoteGranted = false
-		return
-	} else if lastLogEntryTerm == args.LastLogTerm && lastLogEntryIndex > args.LastLogIndex {
-		LOG(rf.me, rf.currentTerm, DVote, "-> S%d, Reject, Last log entry index is newer, [%d]T%d at S%d, [%d]T%d at S%d",
-			args.CandidateId, lastLogEntryIndex, lastLogEntryTerm, rf.me, args.LastLogIndex, args.LastLogTerm, args.CandidateId)
-		reply.VoteGranted = false
+	if rf.isMoreUpToDateLocked(args.LastLogIndex, args.LastLogTerm) {
+		LOG(rf.me, rf.currentTerm, DVote, "-> S%d, Reject Vote, S%d's log less up-to-date", args.CandidateId)
 		return
 	}
 
