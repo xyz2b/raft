@@ -126,7 +126,7 @@ func (rf *Raft) startReplication(term int) bool {
 		/*
 			如果leader当前最后一条日志的索引 >= follower 的 nextIndex（leader 的 nextIndex[] 中记录的）: 向 follower 发送带有从nextIndex开始的日志条目的AppendEntries RPC
 			        如果成功：更新follower在leader本地nextIndex[]中的nextIndex和matchIndex[]中的matchIndex
-			        如果由于日志不一致而导致follower追加日志失败: 减小nextIndex并重试
+			        如果由于日志不一致而导致follower追加日志失败: 减小nextIndex并重试（如果复制失败，则需要将匹配点回退，继续试探。）
 					日志不一致两种情况：
 						1.follower 的日志索引还没有到达 PrevLogIndex 处（需要将 leader 的 follower 最新日志索引+1 到 PrevLogIndex 处的日志都发来，然后追加到 follower 中）
 						2.follower 在 PrevLogIndex 处的日志 term 和 leader PrevLogIndex 处的日志 term 不一致

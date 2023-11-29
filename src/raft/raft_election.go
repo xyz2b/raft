@@ -30,9 +30,9 @@ func (rf *Raft) isMoreUpToDateLocked(candidateIndex, candidateTerm int) bool {
 	LOG(rf.me, rf.currentTerm, DVote, "Compare last log, Me: [%d]T%d, Candidate: [%d]T%d", lastLogEntryIndex, lastLogEntryTerm, candidateIndex, candidateTerm)
 
 	if lastLogEntryTerm != candidateTerm {
-		return lastLogEntryTerm > candidateTerm
+		return lastLogEntryTerm > candidateTerm //  local last log entry term is newer than candidate
 	}
-	return lastLogEntryIndex > candidateIndex
+	return lastLogEntryIndex > candidateIndex //  local last log entry index is newer than candidate
 }
 
 // example RequestVote RPC handler.
@@ -66,20 +66,6 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	}
 
 	// 比较日志的新旧
-	//logCount := rf.LogCountLocked()
-	//lastLogEntryIndex := logCount
-	//lastLogEntryTerm := rf.log[logCount].Term
-	//
-	//if lastLogEntryTerm > args.LastLogTerm {
-	//	LOG(rf.me, rf.currentTerm, DVote, "-> S%d, Reject, Last log entry term is newer, [%d]T%d at S%d, [%d]T%d at S%d",
-	//		args.CandidateId, lastLogEntryIndex, lastLogEntryTerm, rf.me, args.LastLogIndex, args.LastLogTerm, args.CandidateId)
-	//	return
-	//} else if lastLogEntryTerm == args.LastLogTerm && lastLogEntryIndex > args.LastLogIndex {
-	//	LOG(rf.me, rf.currentTerm, DVote, "-> S%d, Reject, Last log entry index is newer, [%d]T%d at S%d, [%d]T%d at S%d",
-	//		args.CandidateId, lastLogEntryIndex, lastLogEntryTerm, rf.me, args.LastLogIndex, args.LastLogTerm, args.CandidateId)
-	//	return
-	//}
-
 	if rf.isMoreUpToDateLocked(args.LastLogIndex, args.LastLogTerm) {
 		LOG(rf.me, rf.currentTerm, DVote, "-> S%d, Reject Vote, S%d's log less up-to-date", args.CandidateId)
 		return
