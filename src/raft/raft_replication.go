@@ -2,7 +2,12 @@ package raft
 
 import (
 	"math"
+	"sort"
 	"time"
+)
+
+const (
+	replicateInterval = 100 * time.Millisecond
 )
 
 type AppendEntriesArgs struct {
@@ -46,9 +51,12 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 
 	lastLogIndex := rf.LogCountLocked()
 	// 如果不包含 在 prevLogIndex 处 任期为 prevLogTerm 的日志条目，返回 false
-	if (lastLogIndex < args.PrevLogIndex) || (rf.log[args.PrevLogIndex].Term != args.PrevLogTerm) {
-		LOG(rf.me, rf.currentTerm, DLog2, "<- S%d, Reject log, doesn’t contain an entry at [%d]T%d",
-			args.LeaderId, args.PrevLogIndex, args.PrevLogTerm)
+	if lastLogIndex < args.PrevLogIndex {
+		LOG(rf.me, rf.currentTerm, DLog2, "<- S%d, Reject log, Follower log too short, lastLogIndex:%d < PrevLogIndex:%d", args.LeaderId, lastLogIndex, args.PrevLogIndex)
+		return
+	}
+	if rf.log[args.PrevLogIndex].Term != args.PrevLogTerm {
+		LOG(rf.me, rf.currentTerm, DLog2, "<- S%d, Reject log, Prev log not match, [%d]: T%d != T%d", args.LeaderId, args.PrevLogIndex, rf.log[args.PrevLogIndex].Term, args.PrevLogTerm)
 		return
 	}
 
@@ -61,7 +69,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	if args.LeaderCommit > rf.commitIndex {
 		oldCommitIndex := rf.commitIndex
 		rf.commitIndex = int(math.Min(float64(args.LeaderCommit), float64(rf.LogCountLocked())))
-		LOG(rf.me, rf.currentTerm, DLog2, "Update commitIndex: %d->%d actively", oldCommitIndex, rf.commitIndex)
+		LOG(rf.me, rf.currentTerm, DLog2, "Follower update the commit index %d->%d", oldCommitIndex, rf.commitIndex)
 
 		// Update commitIndex 唤醒 apply goroutine
 		rf.applyCond.Signal()
@@ -82,10 +90,6 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
 	ok := rf.peers[server].Call("Raft.AppendEntries", args, reply)
 	return ok
 }
-
-const (
-	replicateInterval = 100 * time.Millisecond
-)
 
 func (rf *Raft) replicationTicker(term int) {
 	for !rf.killed() {
@@ -118,8 +122,15 @@ func (rf *Raft) startReplication(term int) bool {
 			  1. 你 term 大，我无条件转 Follower
 			  2. 你 term 小，不理会你的请求
 		*/
+		// 两个 RPC，candidate 和 leader 处理 reply 的时候，一定要对齐 term，而不是先判断  contextLost
 		if reply.Term > rf.currentTerm {
 			rf.becomeFollowerLocked(reply.Term)
+			return
+		}
+
+		// check context lost
+		if rf.contextLostLocked(Leader, term) {
+			LOG(rf.me, rf.currentTerm, DLog, "-> S%d, Context Lost, T%d:Leader->T%d:%s", peer, term, rf.currentTerm, rf.role)
 			return
 		}
 
@@ -163,13 +174,21 @@ func (rf *Raft) startReplication(term int) bool {
 			if rf.log[N].Term == rf.currentTerm && count > len(rf.peers)/2 {
 				oldCommitIndex := rf.commitIndex
 				rf.commitIndex = N
-				LOG(rf.me, rf.currentTerm, DLog, "Update commitIndex: %d->%d actively", oldCommitIndex, rf.commitIndex)
+				LOG(rf.me, rf.currentTerm, DLog, "Leader update the commit index %d->%d", oldCommitIndex, rf.commitIndex)
 
 				// Update commitIndex 唤醒 apply goroutine
 				rf.applyCond.Signal()
 				break
 			}
 		}
+		// 在每次更新 rf.matchIndex 后，依据此全局匹配点视图，我们可以算出多数 Peer 的匹配点，进而更新 Leader 的 CommitIndex。我们可以使用排序后找中位数的方法来计算。
+		// 下面逻辑做的事情和上面是一样的，即找出 leader 与多数 peer 共同的匹配点，进而更新 leader 的 commitIndex
+		//majorityMatched := rf.getMajorityIndexLocked()
+		//if majorityMatched > rf.commitIndex {
+		//	LOG(rf.me, rf.currentTerm, DApply, "Leader update the commit index %d->%d", rf.commitIndex, majorityMatched)
+		//	rf.commitIndex = majorityMatched
+		//	rf.applyCond.Signal()
+		//}
 	}
 
 	rf.mu.Lock()
@@ -184,6 +203,7 @@ func (rf *Raft) startReplication(term int) bool {
 	for peer := 0; peer < len(rf.peers); peer++ {
 		if peer == rf.me {
 			// Don't forget to update Leader's matchIndex
+			// 注意这里要更新 leader 的 matchIndex = len(rf.log) - 1，因为可能 rf.log 可能由于 Start 的调用而改变了。
 			rf.matchIndex[peer] = rf.LogCountLocked()
 			rf.nextIndex[peer] = rf.LogCountLocked() + 1
 			continue
@@ -209,4 +229,14 @@ func (rf *Raft) startReplication(term int) bool {
 	}
 
 	return true
+}
+
+func (rf *Raft) getMajorityIndexLocked() int {
+	// TODO(spw): may could be avoid copying
+	tmpIndexes := make([]int, len(rf.matchIndex))
+	copy(tmpIndexes, rf.matchIndex)
+	sort.Ints(sort.IntSlice(tmpIndexes))
+	majorityIdx := (len(tmpIndexes) - 1) / 2
+	LOG(rf.me, rf.currentTerm, DDebug, "Match index after sort: %v, majority[%d]=%d", tmpIndexes, majorityIdx, tmpIndexes[majorityIdx])
+	return tmpIndexes[majorityIdx] // min -> max
 }

@@ -5,6 +5,11 @@ import (
 	"time"
 )
 
+const (
+	electionTimeoutMin time.Duration = 250 * time.Millisecond
+	electionTimeoutMax time.Duration = 400 * time.Millisecond
+)
+
 // example RequestVote RPC arguments structure.
 // field names must start with capital letters!
 type RequestVoteArgs struct {
@@ -157,6 +162,7 @@ func (rf *Raft) startElection(term int) bool {
 			1. 如果对方 Term 比自己小：无视请求，通过返回值“亮出”自己的 Term
 			2. 如果对方 Term 比自己大：乖乖跟上对方 Term，变成最“菜”的 Follower
 		*/
+		// 两个 RPC，candidate 和 leader 处理 reply 的时候，一定要对齐 term，而不是先判断  contextLost
 		if reply.Term > rf.currentTerm {
 			rf.becomeFollowerLocked(reply.Term)
 			return
@@ -211,11 +217,6 @@ func (rf *Raft) isElectionTimeoutLocked() bool {
 	}
 	return false
 }
-
-const (
-	electionTimeoutMin time.Duration = 250 * time.Millisecond
-	electionTimeoutMax time.Duration = 400 * time.Millisecond
-)
 
 func (rf *Raft) resetElectionTimerLocked() {
 	rf.electionStart = time.Now()
