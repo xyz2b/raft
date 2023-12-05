@@ -7,7 +7,7 @@ import (
 )
 
 const (
-	replicateInterval = 100 * time.Millisecond
+	replicateInterval = 70 * time.Millisecond
 )
 
 type AppendEntriesArgs struct {
@@ -145,50 +145,31 @@ func (rf *Raft) startReplication(term int) bool {
 							然后将 follower 本地日志中 从 leader 的 PrevLogIndex 对应的 term（PrevLogTerm） 的第一条日志的 index（包含）开始（即PrevLogIndexNew），到 follower 本地日志末尾的所有日志删除，然后将leader后面发来的日志追加进去）
 					（这里实现直接减到 nextIndex-1（PrevLogIndex）对应的 term（PrevLogTerm） 的第一条日志处，可能会比实际需要的多一些，但是无影响）
 		*/
+		// handle the reply, probe the lower index if the prevLog not matched
 		if !reply.Success {
+			// go back a term
 			idx := rf.nextIndex[peer] - 1
 			term := rf.log[idx].Term
 			for idx > 0 && rf.log[idx].Term == term {
 				idx--
 			}
 			rf.nextIndex[peer] = idx + 1
-			LOG(rf.me, rf.currentTerm, DLog, "Log not matched in %d, Update next=%d", args.PrevLogIndex, rf.nextIndex[peer])
+			LOG(rf.me, rf.currentTerm, DLog, "-> S%d, Not matched at %d, try next=%d", peer, args.PrevLogIndex, rf.nextIndex[peer])
 			return
 		}
 
-		rf.nextIndex[peer] = rf.nextIndex[peer] + len(args.Entries)
-		rf.matchIndex[peer] = rf.nextIndex[peer] - 1
+		rf.matchIndex[peer] = args.PrevLogIndex + len(args.Entries)
+		rf.nextIndex[peer] = rf.matchIndex[peer] + 1
 		LOG(rf.me, rf.currentTerm, DLog, "-> S%d, Accept, Update matchIndex=%v, update nextIndex=%v", peer, rf.matchIndex, rf.nextIndex)
 
-		// 在收到多数 Follower 同步成功的请求后，Leader 要推进 CommitIndex，并让所有 Peer Apply
-		// 如果存在一个N，使得 N > commitIndex，并且matchIndex[i]的大多数都 >= N，并且log[N].term == currentTerm: 设置commitIndex = N
-		lastLogIndex := rf.LogCountLocked()
-		for N := rf.commitIndex + 1; N <= lastLogIndex; N++ {
-			count := 0
-			for i := 0; i < len(rf.peers); i++ {
-				if rf.matchIndex[i] >= N {
-					count++
-				}
-			}
-
-			if rf.log[N].Term == rf.currentTerm && count > len(rf.peers)/2 {
-				oldCommitIndex := rf.commitIndex
-				rf.commitIndex = N
-				LOG(rf.me, rf.currentTerm, DLog, "Leader update the commit index %d->%d", oldCommitIndex, rf.commitIndex)
-
-				// Update commitIndex 唤醒 apply goroutine
-				rf.applyCond.Signal()
-				break
-			}
-		}
 		// 在每次更新 rf.matchIndex 后，依据此全局匹配点视图，我们可以算出多数 Peer 的匹配点，进而更新 Leader 的 CommitIndex。我们可以使用排序后找中位数的方法来计算。
-		// 下面逻辑做的事情和上面是一样的，即找出 leader 与多数 peer 共同的匹配点，进而更新 leader 的 commitIndex
-		//majorityMatched := rf.getMajorityIndexLocked()
-		//if majorityMatched > rf.commitIndex {
-		//	LOG(rf.me, rf.currentTerm, DApply, "Leader update the commit index %d->%d", rf.commitIndex, majorityMatched)
-		//	rf.commitIndex = majorityMatched
-		//	rf.applyCond.Signal()
-		//}
+		// 中位数正好是超过半数的 peer 都提交过的 Index（越大的matchIndex说明已经提交的日志越多，所以需要找中位数）
+		majorityMatched := rf.getMajorityIndexLocked()
+		if majorityMatched > rf.commitIndex {
+			LOG(rf.me, rf.currentTerm, DApply, "Leader update the commit index %d->%d", rf.commitIndex, majorityMatched)
+			rf.commitIndex = majorityMatched
+			rf.applyCond.Signal()
+		}
 	}
 
 	rf.mu.Lock()
@@ -199,7 +180,6 @@ func (rf *Raft) startReplication(term int) bool {
 		return false
 	}
 
-	lastLogIndex := rf.LogCountLocked()
 	for peer := 0; peer < len(rf.peers); peer++ {
 		if peer == rf.me {
 			// Don't forget to update Leader's matchIndex
@@ -209,20 +189,19 @@ func (rf *Raft) startReplication(term int) bool {
 			continue
 		}
 
-		args := &AppendEntriesArgs{
-			Term:         term,
-			LeaderId:     rf.me,
-			LeaderCommit: rf.commitIndex,
-		}
-
 		// 领导者收到应用层发来日志后（raft.Start），要通过心跳同步给所有 Follower
 		// 如果leader当前最后一条日志的索引 >= follower 的 nextIndex（leader 的 nextIndex[] 中记录的）:
 		// 	向 follower 发送带有从nextIndex开始的日志条目的AppendEntries RPC
-		if lastLogIndex >= rf.nextIndex[peer] {
-			args.Entries = rf.log[rf.nextIndex[peer]:]
+		prevIdx := rf.nextIndex[peer] - 1
+		prevTerm := rf.log[prevIdx].Term
+		args := &AppendEntriesArgs{
+			Term:         rf.currentTerm,
+			LeaderId:     rf.me,
+			PrevLogIndex: prevIdx,
+			PrevLogTerm:  prevTerm,
+			Entries:      rf.log[prevIdx+1:],
+			LeaderCommit: rf.commitIndex,
 		}
-		args.PrevLogTerm = rf.log[rf.nextIndex[peer]-1].Term
-		args.PrevLogIndex = rf.nextIndex[peer] - 1
 		LOG(rf.me, rf.currentTerm, DDebug, "-> S%d, Send log, Prev=[%d]T%d, Len()=%d", peer, args.PrevLogIndex, args.PrevLogTerm, len(args.Entries))
 
 		go replicateToPeer(peer, args)
@@ -234,8 +213,10 @@ func (rf *Raft) startReplication(term int) bool {
 func (rf *Raft) getMajorityIndexLocked() int {
 	// TODO(spw): may could be avoid copying
 	tmpIndexes := make([]int, len(rf.matchIndex))
+	// tmpIndexes := rf.matchIndex[:] 不会复制 Slice 底层数组。得新建一个 Slice，然后使用 copy 函数才能避免 sort 对 matchIndex 的影响。
 	copy(tmpIndexes, rf.matchIndex)
 	sort.Ints(sort.IntSlice(tmpIndexes))
+	// 在 Sort 之后，顺序是从小到大的，因此在计算 CommitIndex 时要取中位数偏左边那个数
 	majorityIdx := (len(tmpIndexes) - 1) / 2
 	LOG(rf.me, rf.currentTerm, DDebug, "Match index after sort: %v, majority[%d]=%d", tmpIndexes, majorityIdx, tmpIndexes[majorityIdx])
 	return tmpIndexes[majorityIdx] // min -> max
