@@ -190,7 +190,7 @@ func (rf *Raft) startReplication(term int) bool {
 		// 中位数正好是超过半数的 peer 都提交过的 Index（越大的matchIndex说明已经提交的日志越多，所以需要找中位数）
 		majorityMatched := rf.getMajorityIndexLocked()
 		if majorityMatched > rf.commitIndex {
-			// 这里是 图8 中所强调的，不要提交前面任期的日志的关键（只能通过提交本任期的日志来间接提交前面任期的日志）
+			// 这里的判断是 图8 中所强调的，不要提交前面任期的日志的关键（只能通过提交本任期的日志来间接提交前面任期的日志）
 			// 如果要提交的最后一条日志条目的任期小于当前任期（日志是顺序提交的，保证不会乱序），就不做提交操作，即不提交前面任期的日志
 			if rf.log[majorityMatched].Term >= rf.currentTerm {
 				LOG(rf.me, rf.currentTerm, DApply, "Leader update the commit index %d->%d", rf.commitIndex, majorityMatched)
