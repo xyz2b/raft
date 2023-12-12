@@ -35,6 +35,11 @@ const (
 	Leader    Role = "Leader"
 )
 
+const (
+	InvalidIndex int = 0
+	InvalidTerm  int = 0
+)
+
 type LogEntry struct {
 	Term         int
 	Command      interface{}
@@ -105,44 +110,6 @@ func (rf *Raft) GetState() (int, bool) {
 	return rf.currentTerm, rf.role == Leader
 }
 
-// save Raft's persistent state to stable storage,
-// where it can later be retrieved after a crash and restart.
-// see paper's Figure 2 for a description of what should be persistent.
-// before you've implemented snapshots, you should pass nil as the
-// second argument to persister.Save().
-// after you've implemented snapshots, pass the current snapshot
-// (or nil if there's not yet a snapshot).
-func (rf *Raft) persist() {
-	// Your code here (PartC).
-	// Example:
-	// w := new(bytes.Buffer)
-	// e := labgob.NewEncoder(w)
-	// e.Encode(rf.xxx)
-	// e.Encode(rf.yyy)
-	// raftstate := w.Bytes()
-	// rf.persister.Save(raftstate, nil)
-}
-
-// restore previously persisted state.
-func (rf *Raft) readPersist(data []byte) {
-	if data == nil || len(data) < 1 { // bootstrap without any state?
-		return
-	}
-	// Your code here (PartC).
-	// Example:
-	// r := bytes.NewBuffer(data)
-	// d := labgob.NewDecoder(r)
-	// var xxx
-	// var yyy
-	// if d.Decode(&xxx) != nil ||
-	//    d.Decode(&yyy) != nil {
-	//   error...
-	// } else {
-	//   rf.xxx = xxx
-	//   rf.yyy = yyy
-	// }
-}
-
 // the service says it has created a snapshot that has
 // all info up to and including index. this means the
 // service no longer needs the log through (and including)
@@ -189,6 +156,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	index = rf.LogCountLocked() + 1
 
 	rf.log = append(rf.log, LogEntry{Term: term, Command: command, CommandValid: true})
+	rf.persistLocked()
 	LOG(rf.me, rf.currentTerm, DLeader, "Leader accept log [%d]T%d(%d), logs: %v", index, term, command, PrintLogsLocked(rf.log))
 
 	return index, term, isLeader
@@ -258,63 +226,6 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	return rf
 }
 
-func (rf *Raft) becomeCandidateLocked() {
-	// the leader cannot be to candidate
-	if rf.role == Leader {
-		LOG(rf.me, rf.currentTerm, DError, "Leader can't become Candidate")
-		return
-	}
-
-	LOG(rf.me, rf.currentTerm, DVote, "%s -> Candidate, For T%d->T%d",
-		rf.role, rf.currentTerm, rf.currentTerm+1)
-
-	rf.role = Candidate
-	rf.currentTerm++
-	rf.votedFor = rf.me
-}
-
-// become a follower in `term`, term could not be decreased
-func (rf *Raft) becomeFollowerLocked(term int) {
-	// if currentTerm is large cannot be to follower
-	if term < rf.currentTerm {
-		LOG(rf.me, rf.currentTerm, DError, "Can't become Follower, lower term")
-		return
-	}
-
-	LOG(rf.me, rf.currentTerm, DLog, "%s -> Follower, For T%d->T%d",
-		rf.role, rf.currentTerm, term)
-
-	// important! Could only reset the `votedFor` when term increased
-	// 只有 candidate 收到 leader 心跳之后转换为 follower 才会在等于（term == rf.currentTerm）的情况下进入 becomeFollowerLocked 逻辑
-	// 因为 candidate 选举一开始肯定已经投过自己了，同 term 不能再投票了。所以不能重置它的投票。
-	if term > rf.currentTerm {
-		// unset vote
-		rf.votedFor = -1
-	}
-	rf.role = Follower
-	rf.currentTerm = term
-}
-
-func (rf *Raft) becomeLeaderLocked() {
-	// Only candidate can be to leader
-	if rf.role != Candidate {
-		LOG(rf.me, rf.currentTerm, DLeader, "%s, Only candidate can become Leader", rf.role)
-		return
-	}
-
-	LOG(rf.me, rf.currentTerm, DLeader, "%s -> Leader, For T%d, commitIndex: %d, logs: %v",
-		rf.role, rf.currentTerm, rf.commitIndex, PrintLogsLocked(rf.log))
-
-	rf.role = Leader
-
-	for peer := 0; peer < len(rf.peers); peer++ {
-		// 发送给某个server的下一条日志的索引（初始化为leader最后一条日志索引+1）
-		rf.nextIndex[peer] = rf.LogCountLocked() + 1
-		// 已知某个server上已经复制的日志的最大索引（初始化为0，自动增加）
-		rf.matchIndex[peer] = 0
-	}
-}
-
 /*
 这里面有个检查“上下文”是否丢失的关键函数：contextLostLocked 。上下文，在不同的地方有不同的指代。
 在我们的 Raft 的实现中，“上下文”就是指 Term 和 Role。即在一个任期内，只要你的角色没有变化，就能放心地推进状态机。
@@ -333,4 +244,20 @@ func (rf *Raft) becomeLeaderLocked() {
 */
 func (rf *Raft) contextLostLocked(role Role, term int) bool {
 	return !(rf.currentTerm == term && rf.role == role)
+}
+
+func (rf *Raft) stateString() string {
+	return fmt.Sprintf("currentTerm: %d, votedFor: %d, length of log: %d", rf.currentTerm, rf.votedFor, len(rf.log))
+}
+
+// 在日志数组中找指定 term 第一条日志的索引
+func (rf *Raft) firstIndexFor(term int) int {
+	for i, entry := range rf.log {
+		if entry.Term == term {
+			return i
+		} else if entry.Term > term {
+			break
+		}
+	}
+	return InvalidIndex
 }

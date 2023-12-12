@@ -78,6 +78,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 
 	reply.VoteGranted = true
 	rf.votedFor = args.CandidateId
+	rf.persistLocked()
 	/*
 		重置时钟本质上是认可对方权威，且承诺自己之后一段时间内不在发起选举。在代码中有两处：
 		  1. 接收到心跳 RPC，并且认可其为 Leader
@@ -222,4 +223,68 @@ func (rf *Raft) resetElectionTimerLocked() {
 	rf.electionStart = time.Now()
 	randRange := int64(electionTimeoutMax - electionTimeoutMin)
 	rf.electionTimeout = electionTimeoutMin + time.Duration(rand.Int63()%randRange)
+}
+
+func (rf *Raft) becomeCandidateLocked() {
+	// the leader cannot be to candidate
+	if rf.role == Leader {
+		LOG(rf.me, rf.currentTerm, DError, "Leader can't become Candidate")
+		return
+	}
+
+	LOG(rf.me, rf.currentTerm, DVote, "%s -> Candidate, For T%d->T%d",
+		rf.role, rf.currentTerm, rf.currentTerm+1)
+
+	rf.role = Candidate
+	rf.currentTerm++
+	rf.votedFor = rf.me
+	rf.persistLocked()
+}
+
+// become a follower in `term`, term could not be decreased
+func (rf *Raft) becomeFollowerLocked(term int) {
+	// if currentTerm is large cannot be to follower
+	if term < rf.currentTerm {
+		LOG(rf.me, rf.currentTerm, DError, "Can't become Follower, lower term")
+		return
+	}
+
+	LOG(rf.me, rf.currentTerm, DLog, "%s -> Follower, For T%d->T%d",
+		rf.role, rf.currentTerm, term)
+
+	// term 是有可能不变的。在 term 不变时，并不需要 persist——因为 term 不变，votedFor 一定不会被重新赋值。
+	shouldPersist := term != rf.currentTerm
+
+	// important! Could only reset the `votedFor` when term increased
+	// 只有 candidate 收到 leader 心跳之后转换为 follower 才会在等于（term == rf.currentTerm）的情况下进入 becomeFollowerLocked 逻辑
+	// 因为 candidate 选举一开始肯定已经投过自己了，同 term 不能再投票了。所以不能重置它的投票。
+	if term > rf.currentTerm {
+		// unset vote
+		rf.votedFor = -1
+	}
+	rf.role = Follower
+	rf.currentTerm = term
+	if shouldPersist {
+		rf.persistLocked()
+	}
+}
+
+func (rf *Raft) becomeLeaderLocked() {
+	// Only candidate can be to leader
+	if rf.role != Candidate {
+		LOG(rf.me, rf.currentTerm, DLeader, "%s, Only candidate can become Leader", rf.role)
+		return
+	}
+
+	LOG(rf.me, rf.currentTerm, DLeader, "%s -> Leader, For T%d, commitIndex: %d, logs: %v",
+		rf.role, rf.currentTerm, rf.commitIndex, PrintLogsLocked(rf.log))
+
+	rf.role = Leader
+
+	for peer := 0; peer < len(rf.peers); peer++ {
+		// 发送给某个server的下一条日志的索引（初始化为leader最后一条日志索引+1）
+		rf.nextIndex[peer] = rf.LogCountLocked() + 1
+		// 已知某个server上已经复制的日志的最大索引（初始化为0，自动增加）
+		rf.matchIndex[peer] = 0
+	}
 }

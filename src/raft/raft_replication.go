@@ -22,6 +22,12 @@ type AppendEntriesArgs struct {
 type AppendEntriesReply struct {
 	Term    int
 	Success bool
+	//XTerm   int // 空，或者 Follower 与 Leader PrevLog 冲突 entry 所存 term
+	//XIndex  int // 空，或者 XTerm 的第一个 entry 的 index
+	//XLen    int // Follower 日志长度
+
+	ConfilictIndex int
+	ConfilictTerm  int
 }
 
 // 心跳接收方在收到心跳时，只要 Leader 的 term 不小于自己，就对其进行认可，变为 Follower，并重置选举时钟，承诺一段时间内不发起选举。
@@ -49,13 +55,36 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	LOG(rf.me, rf.currentTerm, DLog2, "<- S%d, Receive log entry, entries: %v, PrevLogIndex: %d, PrevLogTerm: %d, LeaderCommit: %d",
 		args.LeaderId, PrintLogsLocked(args.Entries), args.PrevLogIndex, args.PrevLogTerm, args.LeaderCommit)
 
+	// reset the timer
+	/*
+		重置时钟本质上是认可对方权威，且承诺自己之后一段时间内不在发起选举。在代码中有两处：
+		  1. 接收到心跳 RPC，并且认可其为 Leader
+		  2. 接受到选举 RPC，并且给出自己的选票
+	*/
+	// 在收到 AppendEntries RPC 时，无论 Follower 接受还是拒绝日志，只要认可对方是 Leader 就要重置时钟。
+	// 但在我们之前的实现，只有接受日志才会重置时钟。这是不对的，如果 Leader 和 Follower 匹配日志所花时间特别长，Follower 一直不重置选举时钟，就有可能错误的选举超时触发选举。
+	// 这里我们可以用一个 defer 函数来在合适位置之后来无论如何都要重置时钟
+	defer rf.resetElectionTimerLocked()
+
 	lastLogIndex := rf.LogCountLocked()
 	// 如果不包含 在 prevLogIndex 处 任期为 prevLogTerm 的日志条目，返回 false
 	if lastLogIndex < args.PrevLogIndex {
+		// 1.如果 Follower 日志过短，则ConfilictTerm 置空， ConfilictIndex 置为 日志的长度。
+		reply.ConfilictIndex = rf.LogCountLocked()
+		reply.ConfilictTerm = InvalidTerm
 		LOG(rf.me, rf.currentTerm, DLog2, "<- S%d, Reject log, Follower log too short, lastLogIndex:%d < PrevLogIndex:%d", args.LeaderId, lastLogIndex, args.PrevLogIndex)
 		return
 	}
 	if rf.log[args.PrevLogIndex].Term != args.PrevLogTerm {
+		// 2.否则，将 ConfilictTerm 设置为 Follower 在 Leader.PrevLogIndex 处日志的 term
+		reply.ConfilictTerm = rf.log[args.PrevLogIndex].Term
+		// ConfilictIndex 设置为 ConfilictTerm 的第一条日志。
+		idx := args.PrevLogIndex
+		term := rf.log[idx].Term
+		for idx > 0 && rf.log[idx].Term == term {
+			idx--
+		}
+		reply.ConfilictIndex = idx + 1
 		LOG(rf.me, rf.currentTerm, DLog2, "<- S%d, Reject log, Prev log not match, [%d]: T%d != T%d", args.LeaderId, args.PrevLogIndex, rf.log[args.PrevLogIndex].Term, args.PrevLogTerm)
 		return
 	}
@@ -63,6 +92,8 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	// 如果现有日志条目与新日志条目冲突（相同索引，但不同的任期），删除现有日志条目及其后面的所有日志条目
 	// 然后将新的 leader logs 添加到本地
 	rf.log = append(rf.log[:args.PrevLogIndex+1], args.Entries...)
+	rf.persistLocked()
+	reply.Success = true
 	LOG(rf.me, rf.currentTerm, DLog2, "Follower append logs: (%d, %d]", args.PrevLogIndex, args.PrevLogIndex+len(args.Entries))
 
 	// 如果 leaderCommit > commitIndex, 设置 commitIndex = min(leaderCommit, 最新日志条目的索引)
@@ -74,16 +105,6 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		// Update commitIndex 唤醒 apply goroutine
 		rf.applyCond.Signal()
 	}
-
-	reply.Success = true
-
-	// reset the timer
-	/*
-		重置时钟本质上是认可对方权威，且承诺自己之后一段时间内不在发起选举。在代码中有两处：
-		  1. 接收到心跳 RPC，并且认可其为 Leader
-		  2. 接受到选举 RPC，并且给出自己的选票
-	*/
-	rf.resetElectionTimerLocked()
 }
 
 func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *AppendEntriesReply) bool {
@@ -134,26 +155,29 @@ func (rf *Raft) startReplication(term int) bool {
 			return
 		}
 
-		/*
-			如果leader当前最后一条日志的索引 >= follower 的 nextIndex（leader 的 nextIndex[] 中记录的）: 向 follower 发送带有从nextIndex开始的日志条目的AppendEntries RPC
-			        如果成功：更新follower在leader本地nextIndex[]中的nextIndex和matchIndex[]中的matchIndex
-			        如果由于日志不一致而导致follower追加日志失败: 减小nextIndex并重试（如果复制失败，则需要将匹配点回退，继续试探。）
-					日志不一致两种情况：
-						1.follower 的日志索引还没有到达 PrevLogIndex 处（需要将 leader 的 follower 最新日志索引+1 到 PrevLogIndex 处的日志都发来，然后追加到 follower 中）
-						2.follower 在 PrevLogIndex 处的日志 term 和 leader PrevLogIndex 处的日志 term 不一致
-							（需要将 leader 的 PrevLogIndex 对应的 term（PrevLogTerm） 的所有日志以及其后term的所有日志都发来，（此时 RPC 参数 PrevLogIndex 为 leader 的 PrevLogIndex 对应的 term（PrevLogTerm） 的第一条日志的 index，记为PrevLogIndexNew）
-							然后将 follower 本地日志中 从 leader 的 PrevLogIndex 对应的 term（PrevLogTerm） 的第一条日志的 index（包含）开始（即PrevLogIndexNew），到 follower 本地日志末尾的所有日志删除，然后将leader后面发来的日志追加进去）
-					（这里实现直接减到 nextIndex-1（PrevLogIndex）对应的 term（PrevLogTerm） 的第一条日志处，可能会比实际需要的多一些，但是无影响）
-		*/
 		// handle the reply, probe the lower index if the prevLog not matched
 		if !reply.Success {
-			// go back a term
-			idx := rf.nextIndex[peer] - 1
-			term := rf.log[idx].Term
-			for idx > 0 && rf.log[idx].Term == term {
-				idx--
+			prevIndex := rf.nextIndex[peer]
+
+			// 1. 如果 ConfilictTerm 为空，说明 Follower 日志太短，直接将 nextIndex 赋值为 ConfilictIndex 迅速回退到 Follower 日志末尾。
+			if reply.ConfilictTerm == InvalidTerm {
+				rf.nextIndex[peer] = reply.ConfilictIndex + 1
+			} else {
+				// 2. 否则，以 Leader 日志为准，跳过 ConfilictTerm 的所有日志；
+				firstTermIndex := rf.firstIndexFor(reply.ConfilictTerm)
+				if firstTermIndex != InvalidIndex {
+					rf.nextIndex[peer] = firstTermIndex
+				} else { // 如果发现 Leader 日志中不存在 ConfilictTerm 的任何日志，则以 Follower 为准跳过 ConflictTerm，即使用 ConfilictIndex
+					rf.nextIndex[peer] = reply.ConfilictIndex
+				}
 			}
-			rf.nextIndex[peer] = idx + 1
+
+			// 匹配探测期比较长时，会有多个探测的 RPC，如果 RPC 结果乱序回来：一个先发出去的探测 RPC 后回来了，
+			// 其中所携带的 XTerm、XIndex 和 XLen 就有可能造成 rf.next 的“反复横跳”。为此，我们可以强制 rf.next 单调递减
+			// avoid the late reply move the nextIndex forward again
+			if rf.nextIndex[peer] > prevIndex {
+				rf.nextIndex[peer] = prevIndex
+			}
 			LOG(rf.me, rf.currentTerm, DLog, "-> S%d, Not matched at %d, try next=%d", peer, args.PrevLogIndex, rf.nextIndex[peer])
 			return
 		}
@@ -166,9 +190,13 @@ func (rf *Raft) startReplication(term int) bool {
 		// 中位数正好是超过半数的 peer 都提交过的 Index（越大的matchIndex说明已经提交的日志越多，所以需要找中位数）
 		majorityMatched := rf.getMajorityIndexLocked()
 		if majorityMatched > rf.commitIndex {
-			LOG(rf.me, rf.currentTerm, DApply, "Leader update the commit index %d->%d", rf.commitIndex, majorityMatched)
-			rf.commitIndex = majorityMatched
-			rf.applyCond.Signal()
+			// 这里是 图8 中所强调的，不要提交前面任期的日志的关键（只能通过提交本任期的日志来间接提交前面任期的日志）
+			// 如果要提交的最后一条日志条目的任期小于当前任期（日志是顺序提交的，保证不会乱序），就不做提交操作，即不提交前面任期的日志
+			if rf.log[majorityMatched].Term >= rf.currentTerm {
+				LOG(rf.me, rf.currentTerm, DApply, "Leader update the commit index %d->%d", rf.commitIndex, majorityMatched)
+				rf.commitIndex = majorityMatched
+				rf.applyCond.Signal()
+			}
 		}
 	}
 
