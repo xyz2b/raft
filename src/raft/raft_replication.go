@@ -20,14 +20,10 @@ type AppendEntriesArgs struct {
 }
 
 type AppendEntriesReply struct {
-	Term    int
-	Success bool
-	//XTerm   int // 空，或者 Follower 与 Leader PrevLog 冲突 entry 所存 term
-	//XIndex  int // 空，或者 XTerm 的第一个 entry 的 index
-	//XLen    int // Follower 日志长度
-
-	ConfilictIndex int
-	ConfilictTerm  int
+	Term          int
+	Success       bool
+	ConflictIndex int // Follower 日志长度（当ConflictTerm为0时） 或者 ConflictTerm 的第一个 entry 的 index（当ConflictTerm不为0时）
+	ConflictTerm  int // 0 或者 Follower 与 Leader PrevLog 冲突 entry 所在的 term
 }
 
 // 心跳接收方在收到心跳时，只要 Leader 的 term 不小于自己，就对其进行认可，变为 Follower，并重置选举时钟，承诺一段时间内不发起选举。
@@ -69,22 +65,22 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	lastLogIndex := rf.LogCountLocked()
 	// 如果不包含 在 prevLogIndex 处 任期为 prevLogTerm 的日志条目，返回 false
 	if lastLogIndex < args.PrevLogIndex {
-		// 1.如果 Follower 日志过短，则ConfilictTerm 置空， ConfilictIndex 置为 日志的长度。
-		reply.ConfilictIndex = rf.LogCountLocked()
-		reply.ConfilictTerm = InvalidTerm
+		// 1.如果 Follower 日志过短，则ConflictTerm 置空， ConflictIndex 置为 日志的长度。
+		reply.ConflictIndex = rf.LogCountLocked()
+		reply.ConflictTerm = InvalidTerm
 		LOG(rf.me, rf.currentTerm, DLog2, "<- S%d, Reject log, Follower log too short, lastLogIndex:%d < PrevLogIndex:%d", args.LeaderId, lastLogIndex, args.PrevLogIndex)
 		return
 	}
 	if rf.log[args.PrevLogIndex].Term != args.PrevLogTerm {
-		// 2.否则，将 ConfilictTerm 设置为 Follower 在 Leader.PrevLogIndex 处日志的 term
-		reply.ConfilictTerm = rf.log[args.PrevLogIndex].Term
-		// ConfilictIndex 设置为 ConfilictTerm 的第一条日志。
+		// 2.否则，将 ConflictTerm 设置为 Follower 在 Leader.PrevLogIndex 处日志的 term
+		reply.ConflictTerm = rf.log[args.PrevLogIndex].Term
+		// ConflictIndex 设置为 ConflictTerm 的第一条日志。
 		idx := args.PrevLogIndex
 		term := rf.log[idx].Term
 		for idx > 0 && rf.log[idx].Term == term {
 			idx--
 		}
-		reply.ConfilictIndex = idx + 1
+		reply.ConflictIndex = idx + 1
 		LOG(rf.me, rf.currentTerm, DLog2, "<- S%d, Reject log, Prev log not match, [%d]: T%d != T%d", args.LeaderId, args.PrevLogIndex, rf.log[args.PrevLogIndex].Term, args.PrevLogTerm)
 		return
 	}
@@ -159,16 +155,16 @@ func (rf *Raft) startReplication(term int) bool {
 		if !reply.Success {
 			prevIndex := rf.nextIndex[peer]
 
-			// 1. 如果 ConfilictTerm 为空，说明 Follower 日志太短，直接将 nextIndex 赋值为 ConfilictIndex 迅速回退到 Follower 日志末尾。
-			if reply.ConfilictTerm == InvalidTerm {
-				rf.nextIndex[peer] = reply.ConfilictIndex + 1
+			// 1. 如果 ConflictTerm 为空，说明 Follower 日志太短，直接将 nextIndex 赋值为 ConflictIndex 迅速回退到 Follower 日志末尾。
+			if reply.ConflictTerm == InvalidTerm {
+				rf.nextIndex[peer] = reply.ConflictIndex + 1
 			} else {
-				// 2. 否则，以 Leader 日志为准，跳过 ConfilictTerm 的所有日志；
-				firstTermIndex := rf.firstIndexFor(reply.ConfilictTerm)
+				// 2. 否则，以 Leader 日志为准，跳过 ConflictTerm 的所有日志；
+				firstTermIndex := rf.firstIndexFor(reply.ConflictTerm)
 				if firstTermIndex != InvalidIndex {
 					rf.nextIndex[peer] = firstTermIndex
-				} else { // 如果发现 Leader 日志中不存在 ConfilictTerm 的任何日志，则以 Follower 为准跳过 ConflictTerm，即使用 ConfilictIndex
-					rf.nextIndex[peer] = reply.ConfilictIndex
+				} else { // 如果发现 Leader 日志中不存在 ConflictTerm 的任何日志，则以 Follower 为准跳过 ConflictTerm，即使用 ConflictIndex
+					rf.nextIndex[peer] = reply.ConflictIndex
 				}
 			}
 
