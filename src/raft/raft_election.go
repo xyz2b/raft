@@ -179,10 +179,10 @@ func (rf *Raft) startElection(term int) bool {
 		// count votes
 		if reply.VoteGranted {
 			votes++
-		}
-		if votes > len(rf.peers)/2 {
-			rf.becomeLeaderLocked()
-			go rf.replicationTicker(term)
+			if votes > len(rf.peers)/2 {
+				rf.becomeLeaderLocked()
+				go rf.replicationTicker(term)
+			}
 		}
 	}
 

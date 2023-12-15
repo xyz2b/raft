@@ -44,7 +44,7 @@ func (rf *Raft) applyTicker() {
 		rf.mu.Lock()
 		oldLastApplied := rf.lastApplied
 		rf.lastApplied += len(entries)
-		LOG(rf.me, rf.currentTerm, DApply, "Apply log as %s, server=%d, appleIdx=[%d, %d], commitIdx=%d", rf.role, rf.me, oldLastApplied+1, rf.lastApplied, rf.commitIndex)
+		LOG(rf.me, rf.currentTerm, DApply, "Apply log as %s, server=%d, appleIdx=[%d, %d], commitIdx=%d, applyLog=%s", rf.role, rf.me, oldLastApplied+1, rf.lastApplied, rf.commitIndex, rf.printLog(entries))
 		rf.mu.Unlock()
 	}
 }

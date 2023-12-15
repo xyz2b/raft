@@ -75,12 +75,13 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		// 2.否则，将 ConflictTerm 设置为 Follower 在 Leader.PrevLogIndex 处日志的 term
 		reply.ConflictTerm = rf.log[args.PrevLogIndex].Term
 		// ConflictIndex 设置为 ConflictTerm 的第一条日志。
-		idx := args.PrevLogIndex
-		term := rf.log[idx].Term
-		for idx > 0 && rf.log[idx].Term == term {
-			idx--
-		}
-		reply.ConflictIndex = idx + 1
+		//idx := args.PrevLogIndex
+		//term := rf.log[idx].Term
+		//for idx > 0 && rf.log[idx].Term == term {
+		//	idx--
+		//}
+		//reply.ConflictIndex = idx + 1
+		reply.ConflictIndex = rf.firstIndexFor(reply.ConflictTerm)
 		LOG(rf.me, rf.currentTerm, DLog2, "<- S%d, Reject log, Prev log not match, [%d]: T%d != T%d", args.LeaderId, args.PrevLogIndex, rf.log[args.PrevLogIndex].Term, args.PrevLogTerm)
 		return
 	}
@@ -90,7 +91,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	rf.log = append(rf.log[:args.PrevLogIndex+1], args.Entries...)
 	rf.persistLocked()
 	reply.Success = true
-	LOG(rf.me, rf.currentTerm, DLog2, "Follower append logs: (%d, %d]", args.PrevLogIndex, args.PrevLogIndex+len(args.Entries))
+	LOG(rf.me, rf.currentTerm, DLog2, "Server:%d, Follower append logs: (%d, %d]", rf.me, args.PrevLogIndex, args.PrevLogIndex+len(args.Entries))
 
 	// 如果 leaderCommit > commitIndex, 设置 commitIndex = min(leaderCommit, 最新日志条目的索引)
 	if args.LeaderCommit > rf.commitIndex {

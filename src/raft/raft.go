@@ -18,6 +18,7 @@ package raft
 //
 
 import (
+	"bytes"
 	"fmt"
 	"sync"
 	"sync/atomic"
@@ -203,9 +204,8 @@ func Make(peers []*labrpc.ClientEnd, me int,
 
 	// Your initialization code here (PartA, PartB, PartC).
 	// log 第一个索引是从1开始
-	rf.log = make([]LogEntry, 0, logsInitialCapacity)
 	// 第一个空的entry，方便边界处理
-	rf.log = append(rf.log, LogEntry{Term: 0, CommandValid: false})
+	rf.log = append(rf.log, LogEntry{Term: InvalidTerm, CommandValid: false})
 	rf.matchIndex = make([]int, len(rf.peers))
 	rf.nextIndex = make([]int, len(rf.peers))
 
@@ -260,4 +260,18 @@ func (rf *Raft) firstIndexFor(term int) int {
 		}
 	}
 	return InvalidIndex
+}
+
+func (rf *Raft) printLog(log []LogEntry) string {
+	var ret bytes.Buffer
+
+	ret.WriteString("[")
+	for index, log := range log {
+		if log.CommandValid {
+			ret.WriteString(fmt.Sprintf("[%d]T%d:%v, ", index, log.Term, log.Command))
+		}
+	}
+
+	ret.WriteString("]")
+	return ret.String()
 }

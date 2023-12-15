@@ -3,7 +3,12 @@ package raft
 import (
 	"bytes"
 	"course/labgob"
+	"fmt"
 )
+
+func (rf *Raft) persistString() string {
+	return fmt.Sprintf("T%d, VotedFor: %d, Log: [0: %d)", rf.currentTerm, rf.votedFor, len(rf.log))
+}
 
 // save Raft's persistent state to stable storage,
 // where it can later be retrieved after a crash and restart.
@@ -21,6 +26,7 @@ func (rf *Raft) persistLocked() {
 	e.Encode(rf.log)
 	raftState := w.Bytes()
 	rf.persister.Save(raftState, nil)
+	LOG(rf.me, rf.currentTerm, DPersist, "Persist: %v", rf.persistString())
 }
 
 // restore previously persisted state.
