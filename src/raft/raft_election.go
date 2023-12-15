@@ -171,8 +171,9 @@ func (rf *Raft) startElection(term int) bool {
 
 		// check the context
 		// 对齐 Term 之后，还要检查上下文，即处理 RPC （RPC 回调函数也是在其他线程调用的）返回值和处理多线程本质上一样：都要首先确保上下文没有丢失，才能驱动状态机。
-		if rf.contextLostLocked(Candidate, rf.currentTerm) {
-			LOG(rf.me, rf.currentTerm, DVote, "Lost context, abort RequestVoteReply in T%d", rf.currentTerm)
+		// 注意：始终都要使用传入 startElection 函数的 term
+		if rf.contextLostLocked(Candidate, term) {
+			LOG(rf.me, rf.currentTerm, DVote, "-> S%d, Lost context, abort RequestVoteReply", peer)
 			return
 		}
 
@@ -194,6 +195,8 @@ func (rf *Raft) startElection(term int) bool {
 		return false
 	}
 
+	// 注意：要在 for 循环前先获取现在目前最后一条log的索引
+	logCount := rf.LogCountLocked()
 	for peer := 0; peer < len(rf.peers); peer++ {
 		if peer == rf.me {
 			votes++
@@ -201,10 +204,10 @@ func (rf *Raft) startElection(term int) bool {
 		}
 
 		args := &RequestVoteArgs{
-			Term:         term,
+			Term:         rf.currentTerm,
 			CandidateId:  rf.me,
-			LastLogIndex: rf.LogCountLocked(),
-			LastLogTerm:  rf.log[rf.LogCountLocked()].Term,
+			LastLogIndex: logCount,
+			LastLogTerm:  rf.log[logCount].Term,
 		}
 		go askVoteFromPeer(peer, args)
 	}
@@ -213,10 +216,7 @@ func (rf *Raft) startElection(term int) bool {
 }
 
 func (rf *Raft) isElectionTimeoutLocked() bool {
-	if time.Since(rf.electionStart) > rf.electionTimeout {
-		return true
-	}
-	return false
+	return time.Since(rf.electionStart) > rf.electionTimeout
 }
 
 func (rf *Raft) resetElectionTimerLocked() {

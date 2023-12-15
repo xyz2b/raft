@@ -190,7 +190,7 @@ func (rf *Raft) startReplication(term int) bool {
 			// 这里的判断是 图8 中所强调的，不要提交前面任期的日志的关键（只能通过提交本任期的日志来间接提交前面任期的日志）
 			// 如果要提交的最后一条日志条目的任期小于当前任期（日志是顺序提交的，保证不会乱序），就不做提交操作，即不提交前面任期的日志
 			// 只能提交本任期的日志，不能提交前面任期的日志
-			if rf.log[majorityMatched].Term >= rf.currentTerm {
+			if rf.log[majorityMatched].Term == rf.currentTerm {
 				LOG(rf.me, rf.currentTerm, DApply, "Leader update the commit index %d->%d", rf.commitIndex, majorityMatched)
 				rf.commitIndex = majorityMatched
 				rf.applyCond.Signal()
@@ -238,12 +238,12 @@ func (rf *Raft) startReplication(term int) bool {
 
 func (rf *Raft) getMajorityIndexLocked() int {
 	// TODO(spw): may could be avoid copying
-	tmpIndexes := make([]int, len(rf.matchIndex))
+	tmpIndexes := make([]int, len(rf.peers))
 	// tmpIndexes := rf.matchIndex[:] 不会复制 Slice 底层数组。得新建一个 Slice，然后使用 copy 函数才能避免 sort 对 matchIndex 的影响。
 	copy(tmpIndexes, rf.matchIndex)
 	sort.Ints(sort.IntSlice(tmpIndexes))
 	// 在 Sort 之后，顺序是从小到大的，因此在计算 CommitIndex 时要取中位数偏左边那个数
-	majorityIdx := (len(tmpIndexes) - 1) / 2
+	majorityIdx := (len(rf.peers) - 1) / 2
 	LOG(rf.me, rf.currentTerm, DDebug, "Match index after sort: %v, majority[%d]=%d", tmpIndexes, majorityIdx, tmpIndexes[majorityIdx])
 	return tmpIndexes[majorityIdx] // min -> max
 }

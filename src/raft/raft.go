@@ -139,28 +139,19 @@ Raft协议的服务（例如键/值服务器）希望开始就要添加到Raft�
 第一个返回值是该命令如果被提交将出现的索引。第二个返回值是当前任期。第三个返回值是如果该服务器认为它是领导者则为true。
 */
 func (rf *Raft) Start(command interface{}) (int, int, bool) {
-	index := 0
-	term := 0
-	isLeader := false
-
 	// Your code here (PartB).
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
-	isLeader = rf.role == Leader
-
 	// Append  日志前一点要先检查自己是否仍然为 Leader：只有 Leader 才能直接 Append 日志到本地，也即整个 Raft Group 只有一个外界数据接收点——那就是 Leader；不遵循此原则，会出现日志冲突。
-	if !isLeader {
-		return index, term, isLeader
+	if rf.role != Leader {
+		return 0, 0, false
 	}
 
-	term = rf.currentTerm
-	index = rf.LogCountLocked() + 1
-
-	rf.log = append(rf.log, LogEntry{Term: term, Command: command, CommandValid: true})
+	rf.log = append(rf.log, LogEntry{Term: rf.currentTerm, Command: command, CommandValid: true})
 	rf.persistLocked()
-	LOG(rf.me, rf.currentTerm, DLeader, "Leader accept log [%d]T%d(%d), log len: %d", index, term, command, rf.LogCountLocked())
+	LOG(rf.me, rf.currentTerm, DLeader, "Leader accept log [%d]T%d(%d)", rf.LogCountLocked(), rf.currentTerm, command)
 
-	return index, term, isLeader
+	return rf.LogCountLocked(), rf.currentTerm, true
 }
 
 // the tester doesn't halt goroutines created by Raft after each test,
@@ -203,9 +194,14 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.me = me
 
 	// Your initialization code here (PartA, PartB, PartC).
+	rf.role = Follower
+	rf.currentTerm = 1
+	rf.votedFor = -1
+
 	// log 第一个索引是从1开始
 	// 第一个空的entry，方便边界处理
 	rf.log = append(rf.log, LogEntry{Term: InvalidTerm, CommandValid: false})
+
 	rf.matchIndex = make([]int, len(rf.peers))
 	rf.nextIndex = make([]int, len(rf.peers))
 
