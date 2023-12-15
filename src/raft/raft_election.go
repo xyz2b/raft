@@ -276,8 +276,8 @@ func (rf *Raft) becomeLeaderLocked() {
 		return
 	}
 
-	LOG(rf.me, rf.currentTerm, DLeader, "%s -> Leader, For T%d, commitIndex: %d, logs: %v",
-		rf.role, rf.currentTerm, rf.commitIndex, PrintLogsLocked(rf.log))
+	LOG(rf.me, rf.currentTerm, DLeader, "%s -> Leader, For T%d, commitIndex: %d, log len: %d",
+		rf.role, rf.currentTerm, rf.commitIndex, rf.LogCountLocked())
 
 	rf.role = Leader
 

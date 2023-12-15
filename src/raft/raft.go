@@ -157,7 +157,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 
 	rf.log = append(rf.log, LogEntry{Term: term, Command: command, CommandValid: true})
 	rf.persistLocked()
-	LOG(rf.me, rf.currentTerm, DLeader, "Leader accept log [%d]T%d(%d), logs: %v", index, term, command, PrintLogsLocked(rf.log))
+	LOG(rf.me, rf.currentTerm, DLeader, "Leader accept log [%d]T%d(%d), log len: %d", index, term, command, rf.LogCountLocked())
 
 	return index, term, isLeader
 }

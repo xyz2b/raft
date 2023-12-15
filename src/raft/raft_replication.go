@@ -48,8 +48,8 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		rf.becomeFollowerLocked(args.Term)
 	}
 
-	LOG(rf.me, rf.currentTerm, DLog2, "<- S%d, Receive log entry, entries: %v, PrevLogIndex: %d, PrevLogTerm: %d, LeaderCommit: %d",
-		args.LeaderId, PrintLogsLocked(args.Entries), args.PrevLogIndex, args.PrevLogTerm, args.LeaderCommit)
+	LOG(rf.me, rf.currentTerm, DLog2, "<- S%d, Receive log entry, entries len: %d, PrevLogIndex: %d, PrevLogTerm: %d, LeaderCommit: %d",
+		args.LeaderId, len(args.Entries), args.PrevLogIndex, args.PrevLogTerm, args.LeaderCommit)
 
 	// reset the timer
 	/*
@@ -188,6 +188,7 @@ func (rf *Raft) startReplication(term int) bool {
 		if majorityMatched > rf.commitIndex {
 			// 这里的判断是 图8 中所强调的，不要提交前面任期的日志的关键（只能通过提交本任期的日志来间接提交前面任期的日志）
 			// 如果要提交的最后一条日志条目的任期小于当前任期（日志是顺序提交的，保证不会乱序），就不做提交操作，即不提交前面任期的日志
+			// 只能提交本任期的日志，不能提交前面任期的日志
 			if rf.log[majorityMatched].Term >= rf.currentTerm {
 				LOG(rf.me, rf.currentTerm, DApply, "Leader update the commit index %d->%d", rf.commitIndex, majorityMatched)
 				rf.commitIndex = majorityMatched
