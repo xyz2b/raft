@@ -41,6 +41,10 @@ const (
 	InvalidTerm  int = 0
 )
 
+const (
+	AfterStartDoReplicationBatch int64 = 1000
+)
+
 type LogEntry struct {
 	Term         int
 	Command      interface{}
@@ -88,6 +92,8 @@ type Raft struct {
 
 	applyCh   chan ApplyMsg
 	applyCond *sync.Cond
+
+	startLogNum int64
 }
 
 /*
@@ -170,6 +176,12 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	rf.log = append(rf.log, LogEntry{Term: rf.currentTerm, Command: command, CommandValid: true})
 	rf.persistLocked()
 	LOG(rf.me, rf.currentTerm, DLeader, "Leader accept log [%d]T%d(%d)", rf.LogCountLocked(), rf.currentTerm, command)
+
+	rf.startLogNum++
+	// each insert AfterStartDoReplicationBatch logs, start once replication, be async
+	if rf.startLogNum%AfterStartDoReplicationBatch == 0 {
+		go rf.startReplication(rf.currentTerm)
+	}
 
 	return rf.LogCountLocked(), rf.currentTerm, true
 }
