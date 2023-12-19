@@ -90,6 +90,26 @@ type Raft struct {
 	applyCond *sync.Cond
 }
 
+/*
+为了方便复用格式化日志的代码，我们给他封装个函数。
+我们以 [startIndex, endIndex]TXX 形式来按 term 粒度压缩日志信息。也就是简单按 term 归并了下同类项，否则日志信息会过于长，不易阅读。
+*/
+func (rf *Raft) logString() string {
+	var terms string
+	prevTerm := rf.log[0].Term
+	prevStart := 0
+	for i := 0; i < len(rf.log); i++ {
+		if rf.log[i].Term != prevTerm {
+			terms += fmt.Sprintf(" [%d, %d]T%d;", prevStart, i-1, prevTerm)
+			prevTerm = rf.log[i].Term
+			prevStart = i
+		}
+	}
+	terms += fmt.Sprintf(" [%d, %d]T%d;", prevStart, len(rf.log)-1, prevTerm)
+
+	return terms
+}
+
 func (rf *Raft) LogCountLocked() int {
 	return len(rf.log) - 1
 }

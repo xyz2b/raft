@@ -1,6 +1,7 @@
 package raft
 
 import (
+	"fmt"
 	"math/rand"
 	"time"
 )
@@ -28,6 +29,13 @@ type RequestVoteReply struct {
 	VoteGranted bool
 }
 
+func (args *RequestVoteArgs) String() string {
+	return fmt.Sprintf("Candidate-%d T%d, Last:[%d]T%d", args.CandidateId, args.Term, args.LastLogIndex, args.LastLogTerm)
+}
+func (reply *RequestVoteReply) String() string {
+	return fmt.Sprintf("T%d, VoteGranted: %v", reply.Term, reply.VoteGranted)
+}
+
 func (rf *Raft) isMoreUpToDateLocked(candidateIndex, candidateTerm int) bool {
 	logCount := rf.LogCountLocked()
 	lastLogEntryIndex := logCount
@@ -45,6 +53,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	// Your code here (PartA, PartB).
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
+	LOG(rf.me, rf.currentTerm, DDebug, "<- S%d, VoteAsked, Args=%v", args.CandidateId, args.String())
 
 	// align the term
 	/*
@@ -155,7 +164,7 @@ func (rf *Raft) startElection(term int) bool {
 			LOG(rf.me, rf.currentTerm, DDebug, "Ask vote from S%d, Lost or error", peer)
 			return
 		}
-
+		LOG(rf.me, rf.currentTerm, DDebug, "-> S%d, AskVote Reply=%v", peer, reply.String())
 		// align the term
 		/*
 			在接受到 RPC 或者处理 RPC 返回值时的第一步，就是要对齐 Term。因为 Term 在 Raft 中本质上是一种“优先级”或者“权力等级”的体现。
@@ -209,6 +218,7 @@ func (rf *Raft) startElection(term int) bool {
 			LastLogIndex: logCount,
 			LastLogTerm:  rf.log[logCount].Term,
 		}
+		LOG(rf.me, rf.currentTerm, DDebug, "-> S%d, AskVote, Args=%v", peer, args.String())
 		go askVoteFromPeer(peer, args)
 	}
 
