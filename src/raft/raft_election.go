@@ -149,6 +149,11 @@ func (rf *Raft) electionTicker() {
 	}
 }
 
+/*
+在 startElection 函数内只使用传入的参数 term
+ 1. 每次加锁后，都要先校验 contextLost，即状态是否发生变化。
+ 2. 校验后，统一使用 term，表明 term 没有 change 过。
+*/
 func (rf *Raft) startElection(term int) bool {
 	votes := 0
 	askVoteFromPeer := func(peer int, args *RequestVoteArgs) {
@@ -180,7 +185,7 @@ func (rf *Raft) startElection(term int) bool {
 
 		// check the context
 		// 对齐 Term 之后，还要检查上下文，即处理 RPC （RPC 回调函数也是在其他线程调用的）返回值和处理多线程本质上一样：都要首先确保上下文没有丢失，才能驱动状态机。
-		// 注意：始终都要使用传入 startElection 函数的 term
+		// 注意：contextLostLocked 始终都要使用传入 startElection 函数的 term
 		if rf.contextLostLocked(Candidate, term) {
 			LOG(rf.me, rf.currentTerm, DVote, "-> S%d, Lost context, abort RequestVoteReply", peer)
 			return

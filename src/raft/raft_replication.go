@@ -139,6 +139,11 @@ func (rf *Raft) replicationTicker(term int) {
 	}
 }
 
+/*
+在 startReplication 函数内只使用传入的参数 Term：leaderTerm
+ 1. 每次加锁后，都要先校验 contextLost，即是否为 Leader，是否 rf.currentTerm == leaderTerm 。
+ 2. 校验后，统一使用 leaderTerm，表明 term 没有 change 过。
+*/
 func (rf *Raft) startReplication(term int) bool {
 	replicateToPeer := func(peer int, args *AppendEntriesArgs) {
 		reply := &AppendEntriesReply{}
@@ -166,6 +171,7 @@ func (rf *Raft) startReplication(term int) bool {
 		}
 
 		// check context lost
+		// 注意：contextLostLocked 始终都要使用传入 startReplication 函数的 term
 		if rf.contextLostLocked(Leader, term) {
 			LOG(rf.me, rf.currentTerm, DLog, "-> S%d, Context Lost, T%d:Leader->T%d:%s", peer, term, rf.currentTerm, rf.role)
 			return
