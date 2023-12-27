@@ -24,8 +24,10 @@ func (rf *Raft) persistLocked() {
 	e.Encode(rf.currentTerm)
 	e.Encode(rf.votedFor)
 	e.Encode(rf.log)
+	e.Encode(rf.lastIncludeIndex)
+	e.Encode(rf.lastIncludeTerm)
 	raftState := w.Bytes()
-	rf.persister.Save(raftState, nil)
+	rf.persister.Save(raftState, rf.snapshot)
 	LOG(rf.me, rf.currentTerm, DPersist, "Persist: %v", rf.persistString())
 }
 
@@ -38,6 +40,8 @@ func (rf *Raft) readPersist(data []byte) {
 	var currentTerm int
 	var votedFor int
 	var log []LogEntry
+	var lastIncludeIndex int
+	var lastIncludeTerm int
 
 	r := bytes.NewBuffer(data)
 	d := labgob.NewDecoder(r)
@@ -58,5 +62,18 @@ func (rf *Raft) readPersist(data []byte) {
 		return
 	}
 	rf.log = log
+
+	if err := d.Decode(&lastIncludeIndex); err != nil {
+		LOG(rf.me, rf.currentTerm, DPersist, "Read lastIncludeIndex error: %v", err)
+		return
+	}
+	rf.lastIncludeIndex = lastIncludeIndex
+
+	if err := d.Decode(&lastIncludeTerm); err != nil {
+		LOG(rf.me, rf.currentTerm, DPersist, "Read lastIncludeTerm error: %v", err)
+		return
+	}
+	rf.lastIncludeTerm = lastIncludeTerm
+
 	LOG(rf.me, rf.currentTerm, DPersist, "Read Persist %v", rf.stateString())
 }

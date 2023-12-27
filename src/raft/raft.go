@@ -93,7 +93,17 @@ type Raft struct {
 	applyCh   chan ApplyMsg
 	applyCond *sync.Cond
 
+	// each insert AfterStartDoReplicationBatch logs, start once replication, be async
 	startLogNum int64
+
+	// snapshot中最后一条日志的index和term
+	lastIncludeIndex int
+	lastIncludeTerm  int
+	snapshot         []byte
+}
+
+func (rf *Raft) IndexLocked(index int) int {
+	return index - rf.lastIncludeIndex
 }
 
 /*
@@ -135,15 +145,6 @@ func (rf *Raft) GetState() (int, bool) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 	return rf.currentTerm, rf.role == Leader
-}
-
-// the service says it has created a snapshot that has
-// all info up to and including index. this means the
-// service no longer needs the log through (and including)
-// that index. Raft should now trim its log as much as possible.
-func (rf *Raft) Snapshot(index int, snapshot []byte) {
-	// Your code here (PartD).
-
 }
 
 // the service using Raft (e.g. a k/v server) wants to start
@@ -242,8 +243,13 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.applyCh = applyCh
 	rf.applyCond = sync.NewCond(&rf.mu)
 
+	rf.lastIncludeIndex = 0
+	rf.lastIncludeTerm = 0
+
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
+
+	rf.readSnapshot(persister.ReadSnapshot())
 
 	// start ticker goroutine to start elections
 	go rf.electionTicker()
