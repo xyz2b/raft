@@ -77,7 +77,6 @@ type Raft struct {
 
 	currentTerm int
 	votedFor    int
-	log         []LogEntry
 
 	commitIndex int
 	lastApplied int
@@ -96,46 +95,7 @@ type Raft struct {
 	// each insert AfterStartDoReplicationBatch logs, start once replication, be async
 	startLogNum int64
 
-	// snapshot中最后一条日志的index和term
-	lastIncludeIndex int
-	lastIncludeTerm  int
-	snapshot         []byte
-}
-
-func (rf *Raft) IndexLocked(index int) int {
-	return index - rf.lastIncludeIndex
-}
-
-/*
-为了方便复用格式化日志的代码，我们给他封装个函数。
-我们以 [startIndex, endIndex]TXX 形式来按 term 粒度压缩日志信息。也就是简单按 term 归并了下同类项，否则日志信息会过于长，不易阅读。
-*/
-func (rf *Raft) logString() string {
-	var terms string
-	prevTerm := rf.log[0].Term
-	prevStart := 0
-	for i := 0; i < len(rf.log); i++ {
-		if rf.log[i].Term != prevTerm {
-			terms += fmt.Sprintf(" [%d, %d]T%d;", prevStart, i-1, prevTerm)
-			prevTerm = rf.log[i].Term
-			prevStart = i
-		}
-	}
-	terms += fmt.Sprintf(" [%d, %d]T%d;", prevStart, len(rf.log)-1, prevTerm)
-
-	return terms
-}
-
-func (rf *Raft) LogCountLocked() int {
-	return len(rf.log) - 1
-}
-
-func PrintLogsLocked(log []LogEntry) []string {
-	var printLogEntries []string
-	for index, logEntry := range log {
-		printLogEntries = append(printLogEntries, fmt.Sprintf("[%d]T%d(%d)", index, logEntry.Term, logEntry.Command))
-	}
-	return printLogEntries
+	log *RaftLog
 }
 
 // return currentTerm and whether this server
@@ -174,9 +134,9 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 		return 0, 0, false
 	}
 
-	rf.log = append(rf.log, LogEntry{Term: rf.currentTerm, Command: command, CommandValid: true})
+	rf.log.append(LogEntry{Term: rf.currentTerm, Command: command, CommandValid: true})
 	rf.persistLocked()
-	LOG(rf.me, rf.currentTerm, DLeader, "Leader accept log [%d]T%d(%d)", rf.LogCountLocked(), rf.currentTerm, command)
+	LOG(rf.me, rf.currentTerm, DLeader, "Leader accept log [%d]T%d(%d)", rf.log.size(), rf.currentTerm, command)
 
 	rf.startLogNum++
 	// each insert AfterStartDoReplicationBatch logs, start once replication, be async
@@ -184,7 +144,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 		go rf.startReplication(rf.currentTerm)
 	}
 
-	return rf.LogCountLocked(), rf.currentTerm, true
+	return rf.log.size(), rf.currentTerm, true
 }
 
 // the tester doesn't halt goroutines created by Raft after each test,
@@ -233,7 +193,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 
 	// log 第一个索引是从1开始
 	// 第一个空的entry，方便边界处理
-	rf.log = append(rf.log, LogEntry{Term: InvalidTerm, CommandValid: false})
+	rf.log = NewLog(InvalidIndex, InvalidTerm, nil, nil)
 
 	rf.matchIndex = make([]int, len(rf.peers))
 	rf.nextIndex = make([]int, len(rf.peers))
@@ -243,13 +203,8 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.applyCh = applyCh
 	rf.applyCond = sync.NewCond(&rf.mu)
 
-	rf.lastIncludeIndex = 0
-	rf.lastIncludeTerm = 0
-
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
-
-	rf.readSnapshot(persister.ReadSnapshot())
 
 	// start ticker goroutine to start elections
 	go rf.electionTicker()
@@ -281,19 +236,7 @@ func (rf *Raft) contextLostLocked(role Role, term int) bool {
 }
 
 func (rf *Raft) stateString() string {
-	return fmt.Sprintf("currentTerm: %d, votedFor: %d, length of log: %d", rf.currentTerm, rf.votedFor, len(rf.log))
-}
-
-// 在日志数组中找指定 term 第一条日志的索引
-func (rf *Raft) firstIndexFor(term int) int {
-	for i, entry := range rf.log {
-		if entry.Term == term {
-			return i
-		} else if entry.Term > term {
-			break
-		}
-	}
-	return InvalidIndex
+	return fmt.Sprintf("currentTerm: %d, votedFor: %d, log: %s", rf.currentTerm, rf.votedFor, rf.log.Str())
 }
 
 func (rf *Raft) printLog(log []LogEntry) string {

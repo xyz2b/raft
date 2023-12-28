@@ -37,9 +37,8 @@ func (reply *RequestVoteReply) String() string {
 }
 
 func (rf *Raft) isMoreUpToDateLocked(candidateIndex, candidateTerm int) bool {
-	logCount := rf.LogCountLocked()
-	lastLogEntryIndex := logCount
-	lastLogEntryTerm := rf.log[logCount].Term
+	lastLogEntryIndex := rf.log.size()
+	lastLogEntryTerm := rf.log.at(lastLogEntryIndex).Term
 	LOG(rf.me, rf.currentTerm, DVote, "Compare last log, Me: [%d]T%d, Candidate: [%d]T%d", lastLogEntryIndex, lastLogEntryTerm, candidateIndex, candidateTerm)
 
 	if lastLogEntryTerm != candidateTerm {
@@ -210,7 +209,7 @@ func (rf *Raft) startElection(term int) bool {
 	}
 
 	// 注意：要在 for 循环前先获取现在目前最后一条log的索引
-	logCount := rf.LogCountLocked()
+	lastLogIndex := rf.log.size()
 	for peer := 0; peer < len(rf.peers); peer++ {
 		if peer == rf.me {
 			votes++
@@ -220,8 +219,8 @@ func (rf *Raft) startElection(term int) bool {
 		args := &RequestVoteArgs{
 			Term:         rf.currentTerm,
 			CandidateId:  rf.me,
-			LastLogIndex: logCount,
-			LastLogTerm:  rf.log[logCount].Term,
+			LastLogIndex: lastLogIndex,
+			LastLogTerm:  rf.log.at(lastLogIndex).Term,
 		}
 		LOG(rf.me, rf.currentTerm, DDebug, "-> S%d, AskVote, Args=%v", peer, args.String())
 		go askVoteFromPeer(peer, args)
@@ -292,13 +291,13 @@ func (rf *Raft) becomeLeaderLocked() {
 	}
 
 	LOG(rf.me, rf.currentTerm, DLeader, "%s -> Leader, For T%d, commitIndex: %d, log len: %d",
-		rf.role, rf.currentTerm, rf.commitIndex, rf.LogCountLocked())
+		rf.role, rf.currentTerm, rf.commitIndex, rf.log.size())
 
 	rf.role = Leader
 
 	for peer := 0; peer < len(rf.peers); peer++ {
 		// 发送给某个server的下一条日志的索引（初始化为leader最后一条日志索引+1）
-		rf.nextIndex[peer] = rf.LogCountLocked() + 1
+		rf.nextIndex[peer] = rf.log.size() + 1
 		// 已知某个server上已经复制的日志的最大索引（初始化为0，自动增加）
 		rf.matchIndex[peer] = 0
 	}

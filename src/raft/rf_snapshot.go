@@ -10,44 +10,41 @@ func (rf *Raft) Snapshot(index int, snapshot []byte) {
 	// Your code here (PartD).
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
+	LOG(rf.me, rf.currentTerm, DSnap, "Snap on %d", index)
 
-	if index > rf.commitIndex {
-		LOG(rf.me, rf.currentTerm, DSnap, "snapshot index: %d is longer than commitIndex: %d", index, rf.commitIndex)
+	if index <= rf.log.snapLastIdx || index > rf.commitIndex {
+		LOG(rf.me, rf.currentTerm, DSnap, "Could not snapshot beyond [%d, %d]", rf.log.snapLastIdx+1, rf.commitIndex)
 		return
 	}
 
-	rf.lastIncludeIndex = index
-	rf.lastIncludeTerm = rf.log[index].Term
-	rf.snapshot = snapshot
-	// 删除 index 之前的日志，使用copy的方式。
-	// 使用 Golang 中的切片进行截断时，底层可能并没有真正的丢弃数据，因此需要使用：比如新建+拷贝替代切片，以保证 GC 真正会回收相应空间。
-	newLogInitLength := (rf.LogCountLocked()-rf.lastIncludeIndex)*2 + 1
-	newLog := make([]LogEntry, newLogInitLength)
-	newLog = append(newLog, LogEntry{Term: InvalidTerm, CommandValid: false})
-	copy(newLog, rf.log[rf.lastIncludeIndex+1:])
-	rf.log = newLog
+	rf.log.doSnapshot(index, snapshot)
 	rf.persistLocked()
 }
 
-func (rf *Raft) readSnapshot(snapshot []byte) {
-	rf.snapshot = snapshot
+// --- raft_log.go
+func (rl *RaftLog) doSnapshot(index int, snapshot []byte) {
+	// since idx() will use rl.snapLastIdx, so we should keep it first
+	idx := rl.idx(index)
 
-	rf.applyCh <- ApplyMsg{
-		SnapshotValid: true,
-		Snapshot:      snapshot,
-		SnapshotIndex: rf.lastIncludeIndex,
-		SnapshotTerm:  rf.lastIncludeTerm,
-	}
+	rl.snapLastTerm = rl.tailLog[idx].Term
+	rl.snapLastIdx = index
+	rl.snapshot = snapshot
 
-	LOG(rf.me, rf.currentTerm, DSnap, "Read Snapshot, len: %d, SnapshotIndex: %d, SnapshotTerm: %d", len(snapshot), rf.lastIncludeIndex, rf.lastIncludeTerm)
+	// allocate a new slice
+	newLog := make([]LogEntry, 0, rl.size()-rl.snapLastIdx+1)
+	newLog = append(newLog, LogEntry{
+		Term: rl.snapLastTerm,
+	})
+	newLog = append(newLog, rl.tailLog[idx+1:]...)
+	rl.tailLog = newLog
 }
 
 type InstallSnapshotArgs struct {
-	Term             int
-	LeaderId         int
-	LastIncludeIndex int
-	LastIncludeTerm  int
-	Snapshot         []byte
+	Term         int
+	LeaderId     int
+	SnapLastIdx  int
+	SnapLastTerm int
+	Snapshot     []byte
 }
 
 type InstallSnapshotReply struct {
@@ -56,7 +53,7 @@ type InstallSnapshotReply struct {
 
 func (args *InstallSnapshotArgs) String() string {
 	return fmt.Sprintf("Leader-%d, T%d, LastInclude:[%d]T%d, Snapshot length: %d",
-		args.LeaderId, args.Term, args.LastIncludeIndex, args.LastIncludeTerm, len(args.Snapshot))
+		args.LeaderId, args.Term, args.SnapLastIdx, args.SnapLastTerm, len(args.Snapshot))
 }
 func (reply *InstallSnapshotReply) String() string {
 	return fmt.Sprintf("T%d", reply.Term)
@@ -69,19 +66,21 @@ func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapsho
 
 	reply.Term = rf.currentTerm
 
-	rf.lastIncludeIndex = args.LastIncludeIndex
-	rf.lastIncludeTerm = args.LastIncludeTerm
-	rf.snapshot = make([]byte, len(args.Snapshot))
-	copy(rf.snapshot, args.Snapshot)
+	rf.log.snapLastIdx = args.SnapLastIdx
+	rf.log.snapLastTerm = args.SnapLastTerm
+	rf.log.snapshot = make([]byte, len(args.Snapshot))
+	copy(rf.log.snapshot, args.Snapshot)
 
-	if rf.LogCountLocked() >= args.LastIncludeIndex {
-		// 删除 index 之前的日志，使用copy的方式。
-		// 使用 Golang 中的切片进行截断时，底层可能并没有真正的丢弃数据，因此需要使用：比如新建+拷贝替代切片，以保证 GC 真正会回收相应空间。
-		newLogInitLength := (rf.LogCountLocked()-rf.lastIncludeIndex)*2 + 1
-		newLog := make([]LogEntry, newLogInitLength)
-		newLog = append(newLog, LogEntry{Term: InvalidTerm, CommandValid: false})
-		copy(newLog, rf.log[rf.lastIncludeIndex+1:])
-		rf.log = newLog
+	if rf.log.size() >= args.SnapLastIdx {
+		idx := rf.log.idx(rf.log.snapLastIdx)
+
+		// allocate a new slice
+		newLog := make([]LogEntry, 0, rf.log.size()-rf.log.snapLastIdx+1)
+		newLog = append(newLog, LogEntry{
+			Term: rf.log.snapLastTerm,
+		})
+		newLog = append(newLog, rf.log.tailLog[idx+1:]...)
+		rf.log.tailLog = newLog
 	}
 	rf.persistLocked()
 }

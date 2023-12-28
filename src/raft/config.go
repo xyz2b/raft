@@ -146,9 +146,7 @@ func (cfg *config) checkLogs(i int, m ApplyMsg) (string, bool) {
 	for j := 0; j < len(cfg.logs); j++ {
 		if old, oldok := cfg.logs[j][m.CommandIndex]; oldok && old != v {
 			// 比对 apply 的 msg 在实际 log 中的位置对不对
-			log.Printf("server %v: log %v", i, cfg.rafts[i].printLog(cfg.rafts[i].log))
 			log.Printf("server %v: log %v", i, cfg.logs[i])
-			log.Printf("server %v: log %v", j, cfg.rafts[j].printLog(cfg.rafts[j].log))
 			log.Printf("server %v: log %v", j, cfg.logs[j])
 			// some server has already committed a different value for this entry!
 			err_msg = fmt.Sprintf("server=%v apply msg commandIndex=%v command=%v applyIndex=%v commitIndex=%v != server=%v command=%v applyIndex=%v commitIndex=%v",

@@ -7,7 +7,7 @@ import (
 )
 
 func (rf *Raft) persistString() string {
-	return fmt.Sprintf("T%d, VotedFor: %d, Log: [0: %d)", rf.currentTerm, rf.votedFor, len(rf.log))
+	return fmt.Sprintf("T%d, VotedFor: %d, Log: [0: %d)", rf.currentTerm, rf.votedFor, rf.log.size())
 }
 
 // save Raft's persistent state to stable storage,
@@ -23,11 +23,9 @@ func (rf *Raft) persistLocked() {
 	e := labgob.NewEncoder(w)
 	e.Encode(rf.currentTerm)
 	e.Encode(rf.votedFor)
-	e.Encode(rf.log)
-	e.Encode(rf.lastIncludeIndex)
-	e.Encode(rf.lastIncludeTerm)
+	rf.log.persist(e)
 	raftState := w.Bytes()
-	rf.persister.Save(raftState, rf.snapshot)
+	rf.persister.Save(raftState, rf.log.snapshot)
 	LOG(rf.me, rf.currentTerm, DPersist, "Persist: %v", rf.persistString())
 }
 
@@ -39,9 +37,6 @@ func (rf *Raft) readPersist(data []byte) {
 
 	var currentTerm int
 	var votedFor int
-	var log []LogEntry
-	var lastIncludeIndex int
-	var lastIncludeTerm int
 
 	r := bytes.NewBuffer(data)
 	d := labgob.NewDecoder(r)
@@ -57,23 +52,13 @@ func (rf *Raft) readPersist(data []byte) {
 	}
 	rf.votedFor = votedFor
 
-	if err := d.Decode(&log); err != nil {
-		LOG(rf.me, rf.currentTerm, DPersist, "Read log error: %v", err)
+	if err := rf.log.readPersist(d); err != nil {
+		LOG(rf.me, rf.currentTerm, DPersist, "Read Raft Log error: %v", err)
 		return
 	}
-	rf.log = log
 
-	if err := d.Decode(&lastIncludeIndex); err != nil {
-		LOG(rf.me, rf.currentTerm, DPersist, "Read lastIncludeIndex error: %v", err)
-		return
-	}
-	rf.lastIncludeIndex = lastIncludeIndex
-
-	if err := d.Decode(&lastIncludeTerm); err != nil {
-		LOG(rf.me, rf.currentTerm, DPersist, "Read lastIncludeTerm error: %v", err)
-		return
-	}
-	rf.lastIncludeTerm = lastIncludeTerm
+	rf.log.snapshot = rf.persister.ReadSnapshot()
+	LOG(rf.me, rf.currentTerm, DSnap, "Read Snapshot, len: %d, SnapshotIndex: %d, SnapshotTerm: %d", len(rf.log.snapshot), rf.log.snapLastIdx, rf.log.snapLastTerm)
 
 	LOG(rf.me, rf.currentTerm, DPersist, "Read Persist %v", rf.stateString())
 }
