@@ -144,3 +144,18 @@ func (rl *RaftLog) append(e LogEntry) {
 func (rl *RaftLog) appendFrom(prevIdx int, entries []LogEntry) {
 	rl.tailLog = append(rl.tailLog[:rl.idx(prevIdx)+1], entries...)
 }
+
+// isntall snapshot from the leader to the follower
+func (rl *RaftLog) installSnapshot(index, term int, snapshot []byte) {
+	rl.snapLastIdx = index
+	rl.snapLastTerm = term
+	rl.snapshot = snapshot
+
+	// make a new log array
+	// just discard all the local log, and use the leader's snapshot
+	newLog := make([]LogEntry, 0, 1)
+	newLog = append(newLog, LogEntry{
+		Term: rl.snapLastTerm,
+	})
+	rl.tailLog = newLog
+}

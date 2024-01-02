@@ -201,7 +201,15 @@ func (rf *Raft) startReplication(term int) bool {
 				rf.nextIndex[peer] = prevIndex
 			}
 
-			LOG(rf.me, rf.currentTerm, DLog, "-> S%d, Not matched at Prev=[%d]T%d, Try next Prev=[%d]T%d", peer, args.PrevLogIndex, rf.log.at(args.PrevLogIndex).Term, rf.nextIndex[peer]-1, rf.log.at(rf.nextIndex[peer]-1).Term)
+			// LogEntry in `nextPrevIdx` may be truncated, so we should check it separately
+			nextPrevIdx := rf.nextIndex[peer] - 1
+			nextPrevTerm := InvalidTerm
+			if nextPrevIdx >= rf.log.snapLastIdx {
+				nextPrevTerm = rf.log.at(nextPrevIdx).Term
+			}
+
+			LOG(rf.me, rf.currentTerm, DLog, "-> S%d, Not matched at Prev=[%d]T%d, Try next Prev=[%d]T%d",
+				peer, args.PrevLogIndex, args.PrevLogTerm, nextPrevIdx, nextPrevTerm)
 			LOG(rf.me, rf.currentTerm, DDebug, "Leader log=%v", rf.log.String())
 			return
 		}
@@ -246,6 +254,20 @@ func (rf *Raft) startReplication(term int) bool {
 		// 如果leader当前最后一条日志的索引 >= follower 的 nextIndex（leader 的 nextIndex[] 中记录的）:
 		// 	向 follower 发送带有从nextIndex开始的日志条目的AppendEntries RPC
 		prevIdx := rf.nextIndex[peer] - 1
+		// 当 Leader 试图给 Follower 同步日志时，如果发现要携带的 AppendEntriesArgs.Entries 有部分已经被截断了，则需要先发送 Snapshot
+		if prevIdx < rf.log.snapLastIdx {
+			args := &InstallSnapshotArgs{
+				Term:         rf.currentTerm,
+				LeaderId:     rf.me,
+				SnapLastIdx:  rf.log.snapLastIdx,
+				SnapLastTerm: rf.log.snapLastTerm,
+				Snapshot:     rf.log.snapshot,
+			}
+			LOG(rf.me, rf.currentTerm, DDebug, "-> S%d, InstallSnap, Args=%v", peer, args.String())
+			go rf.installOnPeer(peer, term, args)
+			continue
+		}
+
 		prevTerm := rf.log.at(prevIdx).Term
 		args := &AppendEntriesArgs{
 			Term:         rf.currentTerm,

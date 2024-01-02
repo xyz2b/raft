@@ -96,6 +96,9 @@ type Raft struct {
 	startLogNum int64
 
 	log *RaftLog
+
+	// 当 Follower 收到 snapshot 时，就设置该标记，并且通过 rf.applyCond 唤醒 applicationTicker 进行 apply。
+	snapPending bool
 }
 
 // return currentTerm and whether this server
