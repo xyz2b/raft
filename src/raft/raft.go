@@ -209,6 +209,9 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
 
+	// 宕机重启后，如果有 snapshot 存在：则需要初始化为 snapshot 的 snapLastIdx。因为应用层肯定也是从自己 snapshot 中来恢复的。
+	rf.lastApplied = rf.log.snapLastIdx
+
 	// start ticker goroutine to start elections
 	go rf.electionTicker()
 

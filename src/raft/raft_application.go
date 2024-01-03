@@ -33,9 +33,9 @@ func (rf *Raft) applyTicker() {
 			// 避免 apply 到和 snapshot 有交叠的日志，snapshot 的 apply 在 snapPendingInstall 为 true 的逻辑里会进行
 			//（乱序？不会，因为有收到snapshot时候一定会置位snapPendingInstall，设置了snapPendingInstall就一定会先apply snapshot，只有当snapPendingInstall置位取消，才会去apply 现有日志）
 			// 什么时候会走到这个逻辑，当snapshot已经apply了，但是还未修改lastApplied的时候，crash了（因为真正apply到channel的时候是没有加锁的），重启之后会走到这里。
-			if rf.lastApplied < rf.log.snapLastIdx {
-				rf.lastApplied = rf.log.snapLastIdx
-			}
+			//if rf.lastApplied < rf.log.snapLastIdx {
+			//	rf.lastApplied = rf.log.snapLastIdx
+			//}
 
 			// make sure that the rf.log have all the entries
 			start := rf.lastApplied + 1
