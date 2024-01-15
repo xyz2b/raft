@@ -119,6 +119,13 @@ func (rf *Raft) installOnPeer(peer, term int, args *InstallSnapshotArgs) {
 		return
 	}
 
+	// check context lost
+	// 注意：contextLostLocked 始终都要使用传入 installOnPeer 函数的 term
+	if rf.contextLostLocked(Leader, term) {
+		LOG(rf.me, rf.currentTerm, DLog, "-> S%d, Context Lost, T%d:Leader->T%d:%s", peer, term, rf.currentTerm, rf.role)
+		return
+	}
+
 	/*
 		1. 记得更新：在处理 InstallSnapshotReply 时，很容易忘了更新 matchIndex 和 nextIndex，这会造成不断重复发 InstallSnapshot RPC。
 		2. 条件更新：主要为了处理 RPC Reply 乱序返回的情况。仅仅在 args.LastIncludedIndex > rf.matchIndex[peer] 才更新，
