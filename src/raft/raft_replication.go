@@ -197,7 +197,7 @@ func (rf *Raft) startReplication(term int) bool {
 			// 匹配探测期比较长时，会有多个探测的 RPC，如果 RPC 结果乱序回来：一个先发出去的探测 RPC 后回来了，
 			// 其中所携带的 XTerm、XIndex 和 XLen 就有可能造成 rf.next 的“反复横跳”。为此，我们可以强制 rf.next 单调递减
 			// avoid the late reply move the nextIndex forward again
-			if rf.nextIndex[peer] > prevIndex {
+			if rf.nextIndex[peer] > prevIndex { // 如果本次收到 reply 计算出的来 nextIndex 比本来的 nextIndex 还要大，就保持原来的 nextIndex不变
 				rf.nextIndex[peer] = prevIndex
 			}
 
