@@ -186,12 +186,13 @@ func (rf *Raft) startReplication(term int) bool {
 				rf.nextIndex[peer] = reply.ConflictIndex + 1
 			} else {
 				/*
+						实际可能不会出现以下情况，只是为了举例介绍下面的逻辑假设的情况
 						logEntry.Index
 							| 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 |
 						---------------------------------------------------------------
 						logEntry.Term
 							| 1 | 1 | 1 | 4 | 4 | 5 | 5 | 6 | 6 | 6  |            leader
-							| 1 | 1 | 1 | 2 | 2 | 3 | 3 | 6 | 6 | 6  | 7  | 7  |  follower1(f1)
+							| 1 | 1 | 1 | 2 | 2 | 3 | 3 | 7 | 7 | 7  | 8  | 8  |  follower1(f1)
 
 						leader
 					    nextIndex[f1] = 8
