@@ -185,6 +185,65 @@ func (rf *Raft) startReplication(term int) bool {
 			if reply.ConflictTerm == InvalidTerm {
 				rf.nextIndex[peer] = reply.ConflictIndex + 1
 			} else {
+				/*
+						logEntry.Index
+							| 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 |
+						---------------------------------------------------------------
+						logEntry.Term
+							| 1 | 1 | 1 | 4 | 4 | 5 | 5 | 6 | 6 | 6  |            leader
+							| 1 | 1 | 1 | 2 | 2 | 3 | 3 | 6 | 6 | 6  | 7  | 7  |  follower1(f1)
+
+						leader
+					    nextIndex[f1] = 8
+						sendAppendEntries --> f1
+							AppendEntries
+								PrevLogIndex = 7
+								PrevLogTerm = 5
+
+						f1
+						receiveAppendEntries <- leader
+							f1.lastLogIndex = 12 > PrevLogIndex = 7
+							f1.logEntry[PrevLogIndex=7].Term=3 != PrevLogTerm=5
+						responseAppendEntries -> leader
+							ConflictIndex = 7
+							ConflictTerm = 3
+
+						leader
+						receiveAppendEntriesResponse <- leader
+							leader 没有 Term == ConflictTerm=3 的log entry
+							回退 nextIndex[f1] 到 ConflictIndex=6，即 nextIndex[f1] = 6
+						nextIndex[f1] = 6
+						sendAppendEntries --> f1
+							AppendEntries
+								PrevLogIndex = 5
+								PrevLogTerm = 4
+
+						f1
+						receiveAppendEntries <- leader
+							f1.lastLogIndex = 12 > PrevLogIndex = 5
+							f1.logEntry[PrevLogIndex=5].Term=2 != PrevLogTerm=4
+						responseAppendEntries -> leader
+							ConflictIndex = 4
+							ConflictTerm = 2
+
+					leader
+						receiveAppendEntriesResponse <- leader
+							leader 没有 Term == ConflictTerm=2 的log entry
+							回退 nextIndex[f1] 到 ConflictIndex=4，即 nextIndex[f1] = 4
+						nextIndex[f1] = 4
+						sendAppendEntries --> f1
+							AppendEntries
+								PrevLogIndex = 3
+								PrevLogTerm = 1
+
+					f1
+						receiveAppendEntries <- leader
+							f1.lastLogIndex = 12 > PrevLogIndex = 3
+							f1.logEntry[PrevLogIndex=3].Term=1 == PrevLogTerm=1
+						rf.log.appendFrom(PrevLogIndex=3, args.Entries)，从 PrevLogIndex+1=4 处，将 leader 发来的 log entry 覆盖 f1 原有的 log entry，此时 f1 和 leader 日志一致
+						responseAppendEntries -> leader
+							success
+				*/
 				// 2. 否则，以 Leader 日志为准，跳过 ConflictTerm 的所有日志；
 				firstTermIndex := rf.log.firstLogFor(reply.ConflictTerm)
 				if firstTermIndex != InvalidIndex {
