@@ -143,6 +143,7 @@ func (rf *Raft) electionTicker() {
 
 		// pause for a random amount of time between 50 and 350
 		// milliseconds.
+		// 50ms - 350ms 之内一次选举还没选举完成，就继续下次选举
 		ms := 50 + (rand.Int63() % 300)
 		time.Sleep(time.Duration(ms) * time.Millisecond)
 	}
